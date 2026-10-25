@@ -3,7 +3,7 @@
 A small, transparent harness for running a team of coding agents on one machine.
 The orchestrator plans and merges; workers implement; everything they do is plain files you can read.
 
-Status: planning. Nothing here is implemented yet.
+Status: v0 (core + CLI) works. The GUI is next.
 
 ## Principles
 
@@ -27,7 +27,7 @@ desk core (Rust lib)        ← watches inboxes, delivers, spawns/kills, logs
       └─ desk GUI (egui)    ← what you look at
 ```
 
-The core keeps state in memory and updates it from `notify` file events. It only re-parses files that changed.
+The supervisor (`desk run`) polls the workspace twice a second. Polling is cheap at this size and behaves the same on every drive (see DECISIONS.md). Only one supervisor runs per workspace.
 
 ## Workspace layout
 
@@ -39,7 +39,8 @@ workspace/
   PLAN.md                   current focus + groups in order (orchestrator owns)
   CONVENTIONS.md            project taste: commits, naming, testing
   agents/<name>/
-    agent.toml              cli, model, dir, role, session id
+    agent.toml              cli, model, dir, role, permissions (yours to edit)
+    state.toml              session id, state, context, errors (supervisor writes)
     memory.md               what the agent keeps across sessions
     handoff.md              written before each reset
     scratch/                throwaway files
@@ -51,6 +52,7 @@ workspace/
   asks/<id>.md              questions for the human
   locks/<name>.toml         shared-resource locks
   models/<model>.md         notes + track record per model
+  prompts/                  orchestrator.md, worker.md (edit to taste)
   log/
     events.jsonl            everything the core did
     transcripts/<agent>/<session>.jsonl
@@ -202,7 +204,8 @@ The orchestrator also:
 ## CLI
 
 ```
-desk init                          create a workspace
+desk init [path] [--human name]    create a workspace
+desk run                           the supervisor: delivers mail, runs agents
 desk send <to> [--task N] [--interrupt] <msg>
 desk spawn <name> --cli <c> --model <m> --dir <path> --role <file>
 desk kill <name>
@@ -211,20 +214,23 @@ desk peek <name>
 desk status
 desk task new | set <id> <field> <value>
 desk ask <msg> [--blocking] [--task N]
+desk answer <id> <msg>
+desk inbox                         your unread messages
 desk lock | unlock <name>
-desk pause | resume
+desk pause [--now] | resume [name] resume <name> retries a stopped agent
 ```
 
 ## Adapters
 
 ```rust
 trait Adapter {
-    fn command(&self, agent: &Agent, prompt: &str) -> std::process::Command;
-    fn parse(&self, line: &str) -> Option<Event>;   // stream line → event
+    fn command(&self, run: &RunSpec) -> std::process::Command; // the prompt goes to stdin
+    fn system_prompt(&self) -> bool;                           // if false, the role prompt is prepended
+    fn parse(&self, line: &str) -> Vec<Event>;                 // stream line → events
 }
 ```
 
-v0 ships `claude` and `opencode`. **To verify before writing them:** the exact headless, resume, streaming-JSON and system-prompt flags of each CLI.
+v0 ships `claude` (`-p --output-format stream-json --resume`) and `opencode` (`run --format json --session`).
 
 ## GUI (egui)
 
@@ -259,5 +265,4 @@ Memory search, integrations, cost dashboards, merge tooling, cross-machine sync,
 
 ## Open questions
 
-- The exact CLI flags per adapter (verify).
 - The defaults `desk init` writes (models, limits, prompts).

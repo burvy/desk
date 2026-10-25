@@ -27,7 +27,7 @@ impl Ask {
         self.doc.get("blocking").as_deref() == Some("true")
     }
     pub fn is_open(&self) -> bool {
-        self.doc.get("status").as_deref() != Some("answered")
+        self.doc.get("status").as_deref() == Some("open")
     }
     /// The question, without any answer below it.
     pub fn question(&self) -> &str {
@@ -102,12 +102,7 @@ pub fn answer(ws: &Workspace, id: &str, text: &str) -> Result<Ask> {
     ws.log("answer", serde_json::json!({ "ask": ask.id, "by": by }));
 
     let task = ask.task();
-    if let Some(t) = &task {
-        let still_blocked = open(ws).iter().any(|a| a.blocking() && a.task().as_ref() == Some(t));
-        if !still_blocked && Task::find(ws, t)?.status() == "blocked" {
-            task::set(ws, t, "status", &task::status_before_block(ws, t))?;
-        }
-    }
+    unblock(ws, task.as_deref())?;
     // Asks raised by desk itself (budget) go back to the task's owner.
     let asker = match ask.from() {
         a if ws.participants().contains(&a) => Some(a),
@@ -123,4 +118,22 @@ pub fn answer(ws: &Workspace, id: &str, text: &str) -> Result<Ask> {
         message::send(ws, &by, &asker, task.as_deref(), Kind::Note, &body)?;
     }
     Ok(ask)
+}
+
+/// Closes an ask nobody will answer (its asker was removed), unblocking its task.
+pub fn withdraw(ws: &Workspace, mut ask: Ask) -> Result<()> {
+    ask.doc.set("status", "withdrawn");
+    fsutil::write_atomic(&ask.path, &ask.doc.render())?;
+    ws.log("ask_withdrawn", serde_json::json!({ "ask": ask.id }));
+    unblock(ws, ask.task().as_deref())
+}
+
+/// Puts a blocked task back as it was, once no open ask blocks it.
+fn unblock(ws: &Workspace, task: Option<&str>) -> Result<()> {
+    let Some(t) = task else { return Ok(()) };
+    let still_blocked = open(ws).iter().any(|a| a.blocking() && a.task().as_deref() == Some(t));
+    if !still_blocked && Task::find(ws, t)?.status() == "blocked" {
+        task::set(ws, t, "status", &task::status_before_block(ws, t))?;
+    }
+    Ok(())
 }

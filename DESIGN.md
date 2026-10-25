@@ -210,7 +210,8 @@ desk run                           the supervisor: delivers mail, runs agents
 desk send <to> [--task N] [--interrupt | --raw] <msg>
 desk spawn <name> --cli <preset> [--model m] --dir <path> --role <file>
 desk presets                       the CLIs agents can use, and which are installed
-desk kill <name>
+desk kill <name>                   stop it; memory kept, `spawn` brings it back
+desk remove <name>                 delete it; its unfinished tasks go back to open
 desk reset <name>
 desk peek <name>
 desk command <name> [--script]     the command desk runs for it, to run by hand

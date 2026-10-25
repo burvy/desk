@@ -58,6 +58,8 @@ pub struct App {
     clis: CliEditor,
     /// For terminal agents: the desk log instead of the live terminal.
     show_log: bool,
+    /// The agent whose Remove is waiting for a yes.
+    removing: Option<String>,
     /// Set by "Workspaces"; the window goes back to the start screen.
     pub close_requested: bool,
 }
@@ -84,6 +86,7 @@ impl App {
             form: None,
             clis: CliEditor::default(),
             show_log: false,
+            removing: None,
             close_requested: false,
         }
     }
@@ -248,7 +251,12 @@ impl App {
             self.refresh(true);
         }
         for (name, err) in &self.snap.broken {
-            ui.label(RichText::new(format!("● {name}  broken agent.toml")).color(RED)).on_hover_text(err);
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(format!("● {name}  broken agent.toml")).color(RED)).on_hover_text(err);
+                if ui.small_button("Remove").clicked() {
+                    self.removing = Some(name.clone());
+                }
+            });
         }
         if self.snap.agents.is_empty() {
             ui.label(RichText::new("No agents yet. Start with an orchestrator.").weak());
@@ -523,6 +531,39 @@ impl App {
             let r = open_path(&cfg.dir);
             self.report(r);
         }
+        if ui.button("Remove").on_hover_text("Delete it, with its memory and transcripts").clicked() {
+            self.removing = Some(name.to_string());
+        }
+    }
+
+    fn confirm_remove(&mut self, ctx: &egui::Context) {
+        let Some(name) = self.removing.clone() else { return };
+        let mut answer = None;
+        egui::Window::new(format!("Remove {name}?")).collapsible(false).resizable(false).show(ctx, |ui| {
+            ui.label("Its folder, memory and transcripts are deleted. Its unfinished tasks go back to open.");
+            ui.horizontal(|ui| {
+                if ui.button(RichText::new("Remove").color(RED)).clicked() {
+                    answer = Some(true);
+                }
+                if ui.button("Cancel").clicked() {
+                    answer = Some(false);
+                }
+            });
+        });
+        match answer {
+            Some(true) => {
+                self.removing = None;
+                if self.view == View::Agent(name.clone()) {
+                    self.view = View::Activity;
+                }
+                let r = agent::remove(&self.ws, &name).map(|now| {
+                    if now { format!("{name} removed") } else { format!("{name} will be removed") }
+                });
+                self.report(r);
+            }
+            Some(false) => self.removing = None,
+            None => {}
+        }
     }
 
     /// Writes `scratch/terminal.cmd` (desk's environment plus the agent's
@@ -682,6 +723,7 @@ impl App {
                 self.report(Ok(msg));
             }
         }
+        self.confirm_remove(ui.ctx());
     }
 }
 

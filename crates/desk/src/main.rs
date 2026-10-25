@@ -86,6 +86,11 @@ enum Cmd {
     Kill {
         name: String,
     },
+    /// Delete an agent: its folder, memory and transcripts. Its unfinished
+    /// tasks go back to open, and its locks and asks are cleared.
+    Remove {
+        name: String,
+    },
     /// Have an agent write its handoff, then give it a fresh session.
     Reset {
         name: String,
@@ -278,6 +283,13 @@ Add or override one with presets/<name>.toml in the workspace."
         Cmd::Kill { name } => {
             agent::kill(&ws, &name)?;
             println!("{name} deactivated; `desk spawn` brings it back with its memory");
+        }
+        Cmd::Remove { name } => {
+            if agent::remove(&ws, &name)? {
+                println!("{name} removed");
+            } else {
+                println!("{name} is stopping and will be removed");
+            }
         }
         Cmd::TakeOver { name } => {
             let cmd = agent::take_over(&ws, &name)?;

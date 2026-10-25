@@ -123,7 +123,12 @@ impl Supervisor {
 
         for name in agent::names(&self.ws) {
             // A broken agent.toml fails every tick; say so once, not twice a second.
-            match self.step(&name, paused, &mut notes) {
+            let result = if self.ws.agent_dir(&name).join("REMOVE").exists() {
+                self.remove(&name, &mut notes)
+            } else {
+                self.step(&name, paused, &mut notes)
+            };
+            match result {
                 Ok(()) => {
                     self.errors.remove(&name);
                 }
@@ -425,6 +430,20 @@ impl Supervisor {
             "run_end",
             serde_json::json!({ "agent": name, "ok": ok, "stopped": run.stopping, "error": st.last_error }),
         );
+    }
+
+    /// Stops the agent, then deletes it once nothing of it is running.
+    fn remove(&mut self, name: &str, notes: &mut Vec<String>) -> Result<()> {
+        #[cfg(feature = "terminal")]
+        self.close_terminal(name);
+        if self.runs.contains_key(name) {
+            self.stop(name, "removed", notes);
+            return Ok(());
+        }
+        self.retry_at.remove(name);
+        agent::purge(&self.ws, name)?;
+        notes.push(format!("{name}: removed"));
+        Ok(())
     }
 
     /// Counts a failure: retry after 30s, then 60s, then stop and tell the human.

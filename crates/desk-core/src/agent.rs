@@ -126,6 +126,50 @@ pub fn kill(ws: &Workspace, name: &str) -> Result<()> {
     Ok(())
 }
 
+/// Removes the agent for good. A running supervisor stops it first and then
+/// deletes it (`true` comes back once it's gone). Works on an agent whose
+/// agent.toml is broken.
+pub fn remove(ws: &Workspace, name: &str) -> Result<bool> {
+    if name == ws.config.human {
+        bail!("`{name}` is the human");
+    }
+    crate::workspace::check_name(name)?;
+    if !ws.agent_dir(name).is_dir() {
+        bail!("no agent named `{name}`");
+    }
+    if crate::supervisor::is_alive(ws) {
+        fsutil::write_atomic(&ws.agent_dir(name).join("REMOVE"), "")?;
+        return Ok(false);
+    }
+    purge(ws, name)?;
+    Ok(true)
+}
+
+/// Deletes a stopped agent: its folder and transcripts. Its locks are
+/// released, its unfinished tasks go back to `open` without an owner, and its
+/// open asks are withdrawn. What it sent others and the event log stay.
+pub(crate) fn purge(ws: &Workspace, name: &str) -> Result<()> {
+    crate::lock::release_all(ws, name);
+    for a in crate::ask::open(ws).into_iter().filter(|a| a.from() == name) {
+        crate::ask::withdraw(ws, a)?;
+    }
+    for t in crate::task::list(ws) {
+        if t.owner().as_deref() == Some(name) && !matches!(t.status().as_str(), "done" | "cancelled") {
+            crate::task::set(ws, &t.id, "owner", "")?;
+            crate::task::set(ws, &t.id, "status", "open")?;
+        }
+    }
+    // Renamed out of the way first: a folder half-deleted while a file is held
+    // open would otherwise look like a broken agent.
+    let trash = ws.root.join("log").join(format!(".removed-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&trash);
+    std::fs::rename(ws.agent_dir(name), &trash).with_context(|| format!("removing {name}'s folder"))?;
+    let _ = std::fs::remove_dir_all(&trash);
+    let _ = std::fs::remove_dir_all(ws.transcripts_dir(name));
+    ws.log("remove", serde_json::json!({ "agent": name }));
+    Ok(())
+}
+
 /// Asks the supervisor for a handoff turn, then a fresh session.
 pub fn request_reset(ws: &Workspace, name: &str) -> Result<()> {
     AgentConfig::load(ws, name)?;
@@ -160,4 +204,46 @@ pub fn is_held(ws: &Workspace, name: &str) -> bool {
 pub fn request_retry(ws: &Workspace, name: &str) -> Result<()> {
     AgentConfig::load(ws, name)?;
     fsutil::write_atomic(&ws.agent_dir(name).join("RETRY"), "")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::task::{self, NewTask, Task};
+
+    #[test]
+    fn remove_leaves_nothing_behind() {
+        let dir = std::env::temp_dir().join(format!("desk-remove-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let ws = Workspace::init(&dir, "me").unwrap();
+        // Spawned straight to the folder: a broken agent.toml must not stop a remove.
+        std::fs::create_dir_all(ws.inbox("zhipu").join("read")).unwrap();
+        std::fs::write(ws.agent_dir("zhipu").join("agent.toml"), "cli = ").unwrap();
+        std::fs::create_dir_all(ws.transcripts_dir("zhipu")).unwrap();
+        let mine = |status: &str| {
+            task::new(
+                &ws,
+                NewTask {
+                    title: "x".into(),
+                    status: Some(status.into()),
+                    owner: Some("zhipu".into()),
+                    ..NewTask::default()
+                },
+            )
+            .unwrap()
+        };
+        let (working, done) = (mine("working"), mine("done"));
+        crate::ask::new(&ws, "zhipu", Some(&working.id), true, "ok?").unwrap();
+        crate::lock::acquire(&ws, "db", "zhipu", "").unwrap();
+
+        assert!(remove(&ws, "zhipu").unwrap(), "no supervisor, so it's gone at once");
+        assert!(!ws.agent_dir("zhipu").exists() && !ws.transcripts_dir("zhipu").exists());
+        let w = Task::find(&ws, &working.id).unwrap();
+        assert_eq!((w.status(), w.owner().unwrap_or_default()), ("open".into(), String::new()));
+        assert_eq!(Task::find(&ws, &done.id).unwrap().owner().as_deref(), Some("zhipu"), "history stays");
+        assert!(crate::ask::open(&ws).is_empty() && crate::lock::list(&ws).is_empty());
+        assert!(remove(&ws, "zhipu").is_err());
+        assert!(remove(&ws, "me").is_err());
+        let _ = std::fs::remove_dir_all(&ws.root);
+    }
 }

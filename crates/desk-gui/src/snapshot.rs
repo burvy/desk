@@ -31,6 +31,8 @@ impl AgentRow {
 
 pub struct Snapshot {
     pub agents: Vec<AgentRow>,
+    /// Agents whose agent.toml doesn't parse, with the error.
+    pub broken: Vec<(String, String)>,
     pub tasks: Vec<Task>,
     pub asks: Vec<Ask>,
     pub locks: Vec<Lock>,
@@ -41,20 +43,22 @@ pub struct Snapshot {
 
 impl Snapshot {
     pub fn read(ws: &Workspace) -> Self {
-        let agents = agent::names(ws)
-            .into_iter()
-            .filter_map(|name| {
-                Some(AgentRow {
-                    cfg: AgentConfig::load(ws, &name).ok()?,
+        let (mut agents, mut broken) = (Vec::new(), Vec::new());
+        for name in agent::names(ws) {
+            match AgentConfig::load(ws, &name) {
+                Ok(cfg) => agents.push(AgentRow {
+                    cfg,
                     state: AgentState::load(ws, &name),
                     unread: message::unread(ws, &name).len(),
                     held: agent::is_held(ws, &name),
                     name,
-                })
-            })
-            .collect();
+                }),
+                Err(e) => broken.push((name, format!("{e:#}"))),
+            }
+        }
         Snapshot {
             agents,
+            broken,
             tasks: task::list(ws),
             asks: ask::open(ws),
             locks: lock::list(ws),

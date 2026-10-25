@@ -102,9 +102,7 @@ pub fn spawn(ws: &Workspace, name: &str, config: AgentConfig) -> Result<()> {
     if name == ws.config.human {
         bail!("`{name}` is the human");
     }
-    if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
-        bail!("agent names are letters, digits, - and _");
-    }
+    crate::workspace::check_name(name)?;
     crate::adapter::Preset::load(ws, &config.cli)?;
     if !config.role_file(ws).is_file() {
         bail!("no prompt file at {}", config.role_file(ws).display());

@@ -40,6 +40,8 @@ pub(crate) struct TermAgent {
     handoff: bool,
     /// Interrupts already acted on.
     interrupted: HashSet<PathBuf>,
+    /// The mail typed in this turn (now in `read/`), put back if the CLI dies mid-turn.
+    typed: Vec<PathBuf>,
     transcript: PathBuf,
 }
 
@@ -67,6 +69,7 @@ impl Supervisor {
         }
         if dir.join("RETRY").exists() {
             let _ = std::fs::remove_file(dir.join("RETRY"));
+            self.retry_at.remove(name);
             st.failures = 0;
             st.state = "idle".into();
             st.save(&self.ws, name)?;
@@ -76,37 +79,39 @@ impl Supervisor {
             st.save(&self.ws, name)?;
         }
 
-        // The CLI exited (crashed, or someone typed /exit): restart it, unless it keeps dying.
+        // The CLI exited (crashed, or someone typed /exit). Mid-turn or right
+        // after starting, that's a failure, and mail it was given goes back
+        // to the inbox. Otherwise it just restarts.
         if let Some(t) = self.terms.get(name)
             && t.term.exited()
         {
             let early = t.term.started.elapsed() < EARLY_EXIT;
+            let busy = t.busy_since.is_some();
+            let typed = t.typed.clone();
             self.close_terminal(name);
-            if early {
-                st.failures += 1;
-                st.last_error = Some("the CLI exited right after starting".into());
+            if busy {
+                unread_again(&self.ws, name, &typed);
             }
-            if st.failures >= 3 {
-                st.state = "error".into();
-                let body = format!(
-                    "{name}'s CLI exited right after starting, {} times. Check its command under CLIs, \
-                     then Retry.",
-                    st.failures
-                );
-                let _ = message::send(&self.ws, "desk", &self.ws.config.human, None, Kind::Note, &body);
-                notes.push(format!("{name}: stopped; its CLI keeps exiting"));
+            if early || busy {
+                let why =
+                    if busy { "the CLI exited mid-turn" } else { "the CLI exited right after starting" };
+                self.fail(name, st, why.into(), notes);
             } else {
                 st.state = "idle".into();
                 notes.push(format!("{name}: its CLI exited; restarting"));
             }
             st.save(&self.ws, name)?;
         }
-        if st.state == "error" {
+        if st.state == "error" || self.backing_off(name) {
             return Ok(());
         }
         if !self.terms.contains_key(name) {
-            self.open_terminal(name, cfg)?;
-            notes.push(format!("{name}: terminal started"));
+            if let Err(e) = self.open_terminal(name, cfg) {
+                self.fail(name, st, format!("couldn't start the CLI: {e:#}"), notes);
+                st.save(&self.ws, name)?;
+            } else {
+                notes.push(format!("{name}: terminal started"));
+            }
             return Ok(());
         }
 
@@ -226,6 +231,7 @@ impl Supervisor {
             };
             let paths: Vec<PathBuf> = batch.iter().map(|m| m.path.clone()).collect();
             message::mark_read(&ws, name, &paths)?;
+            t.typed = paths.clone();
             notes.push(format!(
                 "{name}: typed {} message{}",
                 paths.len(),
@@ -284,6 +290,7 @@ impl Supervisor {
                 fresh: true,
                 handoff: false,
                 interrupted: HashSet::new(),
+                typed: Vec::new(),
                 transcript,
             },
         );
@@ -300,6 +307,16 @@ impl Supervisor {
 
     pub(crate) fn busy_count(&self) -> usize {
         self.runs.len() + self.terms.values().filter(|t| t.busy_since.is_some()).count()
+    }
+}
+
+/// Moves typed mail from `read/` back to the inbox.
+fn unread_again(ws: &crate::Workspace, name: &str, paths: &[PathBuf]) {
+    let read = ws.inbox(name).join("read");
+    for p in paths {
+        if let Some(file) = p.file_name() {
+            let _ = std::fs::rename(read.join(file), p);
+        }
     }
 }
 

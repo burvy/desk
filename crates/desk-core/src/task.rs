@@ -161,6 +161,14 @@ pub fn set(ws: &Workspace, id: &str, field: &str, value: &str) -> Result<Task> {
     if field == "status" {
         check_status(value)?;
     }
+    // A typo (`stauts`) would otherwise add a field nothing reads. Fields you
+    // added to task.md yourself are fine.
+    if !task.doc.has(field) {
+        bail!("task {} has no field `{field}` ({})", task.id, task.doc.keys().join(", "));
+    }
+    if field == "budget" && value.parse::<u32>().is_err() {
+        bail!("budget is a number of messages, not `{value}`");
+    }
     let value = if LIST_FIELDS.contains(&field) && !value.starts_with('[') {
         let items: Vec<String> = value.split(',').map(|s| s.trim().to_string()).collect();
         list_value(&items)
@@ -193,11 +201,11 @@ pub fn status_before_block(ws: &Workspace, id: &str) -> String {
     ws.events()
         .iter()
         .rev()
-        .find(|e| {
+        .filter(|e| {
             e["event"] == "task_set" && e["task"] == id && e["field"] == "status" && e["to"] == "blocked"
         })
-        .and_then(|e| e["from"].as_str())
-        .filter(|s| !s.is_empty() && *s != "blocked")
+        .filter_map(|e| e["from"].as_str())
+        .find(|s| !s.is_empty() && *s != "blocked")
         .unwrap_or("working")
         .to_string()
 }
@@ -220,5 +228,35 @@ mod tests {
         assert_eq!(section(body, "Proposed approach").unwrap().trim(), "");
         assert_eq!(section(body, "Done when").unwrap().trim(), "Sand.");
         assert!(section(body, "Non-goals").is_none());
+    }
+
+    fn scratch(tag: &str) -> Workspace {
+        let dir = std::env::temp_dir().join(format!("desk-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        Workspace::init(&dir, "me").unwrap()
+    }
+
+    #[test]
+    fn second_blocking_ask_keeps_the_status_before() {
+        let ws = scratch("block-test");
+        let t = new(&ws, NewTask { title: "x".into(), status: Some("review".into()), ..NewTask::default() })
+            .unwrap();
+        let a1 = crate::ask::new(&ws, "me", Some(&t.id), true, "one?").unwrap();
+        let a2 = crate::ask::new(&ws, "me", Some(&t.id), true, "two?").unwrap();
+        crate::ask::answer(&ws, &a1.id, "yes").unwrap();
+        assert_eq!(Task::find(&ws, &t.id).unwrap().status(), "blocked", "ask two still blocks it");
+        crate::ask::answer(&ws, &a2.id, "yes").unwrap();
+        assert_eq!(Task::find(&ws, &t.id).unwrap().status(), "review");
+        let _ = std::fs::remove_dir_all(&ws.root);
+    }
+
+    #[test]
+    fn set_refuses_unknown_fields() {
+        let ws = scratch("field-test");
+        let t = new(&ws, NewTask { title: "x".into(), ..NewTask::default() }).unwrap();
+        assert!(set(&ws, &t.id, "stauts", "done").is_err());
+        assert!(set(&ws, &t.id, "budget", "lots").is_err());
+        assert!(set(&ws, &t.id, "group", "ui").is_ok());
+        let _ = std::fs::remove_dir_all(&ws.root);
     }
 }

@@ -9,6 +9,7 @@ pub mod fsutil;
 pub mod lock;
 pub mod message;
 pub mod models;
+mod process;
 pub mod prompt;
 pub mod supervisor;
 pub mod task;

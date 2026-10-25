@@ -18,6 +18,8 @@ impl Doc {
     }
 
     pub fn parse(text: &str) -> Result<Self> {
+        // Notepad and friends may start the file with a byte-order mark.
+        let text = text.strip_prefix('\u{feff}').unwrap_or(text);
         let mut it = text.lines();
         if it.next().map(str::trim_end) != Some("---") {
             bail!("missing `---` header");
@@ -72,6 +74,15 @@ impl Doc {
             }
             None => self.lines.push(format!("{key}: {value}")),
         }
+    }
+
+    pub fn has(&self, key: &str) -> bool {
+        self.find(key).is_some()
+    }
+
+    /// The header's keys, in order.
+    pub fn keys(&self) -> Vec<String> {
+        self.lines.iter().filter_map(|l| l.split_once(':').map(|(k, _)| k.trim().to_string())).collect()
     }
 
     fn find(&self, key: &str) -> Option<usize> {
@@ -147,6 +158,12 @@ mod tests {
     fn similar_keys_dont_collide() {
         let d = Doc::parse("---\nto_do: x\nto: rook\n---\n").unwrap();
         assert_eq!(d.get("to").as_deref(), Some("rook"));
+    }
+
+    #[test]
+    fn byte_order_mark() {
+        let d = Doc::parse("\u{feff}---\r\nfrom: me\r\n---\r\nhi\r\n").unwrap();
+        assert_eq!(d.get("from").as_deref(), Some("me"));
     }
 
     #[test]

@@ -38,7 +38,6 @@ struct Shared {
     /// For replies the program asks the terminal for (cursor position...).
     sender: OnceLock<EventLoopSender>,
     size: Mutex<WindowSize>,
-    title: Mutex<String>,
 }
 
 impl EventListener for Listener {
@@ -49,7 +48,6 @@ impl EventListener for Listener {
                 let size = *self.0.size.lock().unwrap();
                 self.reply(format(size).into_bytes());
             }
-            Event::Title(t) => *self.0.title.lock().unwrap() = t,
             Event::ChildExit(_) | Event::Exit => self.0.exited.store(true, Ordering::SeqCst),
             _ => {}
         }
@@ -103,12 +101,14 @@ impl Terminal {
         let pid = pty.child_watcher().pid().map(|p| p.get());
         #[cfg(unix)]
         let pid = Some(pty.child().id());
+        if let Some(pid) = pid {
+            crate::process::adopt(pid);
+        }
 
         let shared = Arc::new(Shared {
             exited: AtomicBool::new(false),
             sender: OnceLock::new(),
             size: Mutex::new(size),
-            title: Mutex::new(String::new()),
         });
         let listener = Listener(shared.clone());
         let config = term::Config { scrolling_history: 5000, ..term::Config::default() };
@@ -155,10 +155,6 @@ impl Terminal {
         self.shared.exited.load(Ordering::SeqCst)
     }
 
-    pub fn title(&self) -> String {
-        self.shared.title.lock().unwrap().clone()
-    }
-
     /// The visible screen as text, one line per row, trailing spaces trimmed.
     pub fn text(&self) -> String {
         let screen = self.screen.lock();
@@ -179,7 +175,7 @@ impl Terminal {
             let _ = tx.send(Msg::Shutdown);
         }
         if let Some(pid) = self.pid {
-            crate::supervisor::kill_tree(pid);
+            crate::process::kill_tree(pid);
         }
     }
 }

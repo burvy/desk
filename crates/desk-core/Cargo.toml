@@ -12,6 +12,10 @@ serde.workspace = true
 serde_json.workspace = true
 toml.workspace = true
 
+[target.'cfg(windows)'.dependencies]
+# A Job Object, so agent processes die with desk however desk exits.
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading"] }
+
 [features]
 # Agents running interactively in a pseudo-terminal; desk-gui turns it on.
 terminal = ["dep:alacritty_terminal"]

@@ -212,9 +212,10 @@ fn run(cli: Cli) -> Result<()> {
         Cmd::Init { .. } => unreachable!(),
         Cmd::Run => supervise(ws)?,
         Cmd::Send { to, task, interrupt, raw, mut message } => {
-            let task = task.or(take_value(&mut message, "--task"));
-            let interrupt = interrupt | take_flag(&mut message, "--interrupt");
-            let raw = raw | take_flag(&mut message, "--raw");
+            let (flags, trailing_task) = trailing_flags(&mut message, &["--interrupt", "--raw"]);
+            let task = task.or(trailing_task);
+            let interrupt = interrupt || flags.iter().any(|f| f == "--interrupt");
+            let raw = raw || flags.iter().any(|f| f == "--raw");
             let kind = match (raw, interrupt) {
                 (true, _) => Kind::Raw,
                 (_, true) => Kind::Interrupt,
@@ -312,8 +313,9 @@ Add or override one with presets/<name>.toml in the workspace."
         Cmd::Status => status(&ws),
         Cmd::Task(t) => task_cmd(&ws, t)?,
         Cmd::Ask { mut question, blocking, task } => {
-            let task = task.or(take_value(&mut question, "--task"));
-            let blocking = blocking | take_flag(&mut question, "--blocking");
+            let (flags, trailing_task) = trailing_flags(&mut question, &["--blocking"]);
+            let task = task.or(trailing_task);
+            let blocking = blocking || !flags.is_empty();
             let a = ask::new(&ws, &me, task.as_deref(), blocking, &text(question)?)?;
             println!(
                 "ask {} raised{}",
@@ -355,22 +357,23 @@ Add or override one with presets/<name>.toml in the workspace."
 }
 
 /// Messages may contain hyphens (`a -> b`), so clap takes every word after
-/// the first as text. A flag given after the message arrives as its own
-/// word, though, so pull those back out rather than send them as text.
-fn take_flag(words: &mut Vec<String>, flag: &str) -> bool {
-    let before = words.len();
-    words.retain(|w| w != flag);
-    words.len() != before
-}
-
-fn take_value(words: &mut Vec<String>, flag: &str) -> Option<String> {
-    let i = words.iter().position(|w| w == flag)?;
-    if i + 1 >= words.len() {
-        return None;
+/// the first as text. Flags written after the message arrive as words, so
+/// take them back off the end, and only the end: `--raw` inside a sentence
+/// is text. Returns the switches found, and `--task`'s value.
+fn trailing_flags(words: &mut Vec<String>, switches: &[&str]) -> (Vec<String>, Option<String>) {
+    let (mut found, mut task) = (Vec::new(), None);
+    while words.len() > 1 {
+        let n = words.len();
+        if switches.contains(&words[n - 1].as_str()) {
+            found.push(words.pop().unwrap_or_default());
+        } else if n > 2 && words[n - 2] == "--task" && task.is_none() {
+            task = words.pop();
+            words.pop();
+        } else {
+            break;
+        }
     }
-    let value = words.remove(i + 1);
-    words.remove(i);
-    Some(value)
+    (found, task)
 }
 
 /// Joins the words of a message; `-` reads stdin.
@@ -426,7 +429,13 @@ fn status(ws: &Workspace) {
 
     println!("AGENTS");
     for name in agent::names(ws) {
-        let Ok(cfg) = AgentConfig::load(ws, &name) else { continue };
+        let cfg = match AgentConfig::load(ws, &name) {
+            Ok(c) => c,
+            Err(e) => {
+                println!("  {name:<12} BROKEN    {}", adapter::clip(&format!("{e:#}"), 100));
+                continue;
+            }
+        };
         let st = AgentState::load(ws, &name);
         let state = match st.state.as_str() {
             _ if agent::is_held(ws, &name) => "held",
@@ -538,4 +547,31 @@ fn task_cmd(ws: &Workspace, t: TaskCmd) -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn words(s: &str) -> Vec<String> {
+        s.split(' ').map(str::to_string).collect()
+    }
+
+    #[test]
+    fn flags_only_come_off_the_end() {
+        let mut w = words("fix a -> b --task 3 --interrupt");
+        let (flags, task) = trailing_flags(&mut w, &["--interrupt", "--raw"]);
+        assert_eq!(
+            (flags, task.as_deref(), w.join(" ")),
+            (vec!["--interrupt".into()], Some("3"), "fix a -> b".into())
+        );
+
+        let mut w = words("don't use --raw here");
+        let (flags, task) = trailing_flags(&mut w, &["--interrupt", "--raw"]);
+        assert!(flags.is_empty() && task.is_none());
+        assert_eq!(w.join(" "), "don't use --raw here");
+
+        let mut w = words("--raw");
+        assert!(trailing_flags(&mut w, &["--raw"]).0.is_empty(), "a lone word is the message");
+    }
 }

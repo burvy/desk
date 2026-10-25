@@ -62,6 +62,9 @@ pub fn send(
     kind: Kind,
     body: &str,
 ) -> Result<PathBuf> {
+    if body.trim().is_empty() {
+        bail!("the message is empty");
+    }
     let known = ws.participants();
     if !known.iter().any(|n| n == to) {
         bail!("no one named `{to}`. Known: {}", known.join(", "));
@@ -83,13 +86,13 @@ pub fn send(
     body.push('\n');
     let text = Doc::new(&fields, body).render();
 
-    // Names sort by time, so the inbox reads oldest first.
-    let stamp = chrono::Local::now().format("%Y-%m-%dT%H%M%S%3f");
+    // Names sort by time, so the inbox reads oldest first: UTC (local time
+    // repeats an hour when DST ends), then a counter for the same millisecond.
+    let stamp = chrono::Utc::now().format("%Y-%m-%dT%H%M%S%3f");
     let inbox = ws.inbox(to);
-    let mut n = 1;
+    let mut n = 0;
     let path = loop {
-        let suffix = if n == 1 { String::new() } else { format!("-{n}") };
-        let p = inbox.join(format!("{stamp}-{from}{suffix}.md"));
+        let p = inbox.join(format!("{stamp}-{n:02}-{from}.md"));
         if fsutil::create_new(&p, &text)? {
             break p;
         }
@@ -102,9 +105,27 @@ pub fn send(
     Ok(path)
 }
 
-/// Unread messages, oldest first.
+/// Unread messages, oldest first. A file that isn't a message (no header,
+/// not UTF-8) moves to `inbox/bad/`, so it's neither stuck nor silently skipped.
 pub fn unread(ws: &Workspace, name: &str) -> Vec<Message> {
-    fsutil::files_with_ext(&ws.inbox(name), "md").iter().filter_map(|p| Message::load(p).ok()).collect()
+    let mut out = Vec::new();
+    for p in fsutil::files_with_ext(&ws.inbox(name), "md") {
+        match Message::load(&p) {
+            Ok(m) => out.push(m),
+            Err(e) => {
+                let bad = ws.inbox(name).join("bad");
+                if let (Ok(()), Some(file)) = (std::fs::create_dir_all(&bad), p.file_name())
+                    && std::fs::rename(&p, bad.join(file)).is_ok()
+                {
+                    ws.log(
+                        "bad_message",
+                        serde_json::json!({ "to": name, "file": p, "error": format!("{e:#}") }),
+                    );
+                }
+            }
+        }
+    }
+    out
 }
 
 pub fn mark_read(ws: &Workspace, name: &str, paths: &[PathBuf]) -> Result<()> {

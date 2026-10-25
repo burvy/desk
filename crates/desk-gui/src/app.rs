@@ -247,6 +247,9 @@ impl App {
             self.compose.to = name;
             self.refresh(true);
         }
+        for (name, err) in &self.snap.broken {
+            ui.label(RichText::new(format!("● {name}  broken agent.toml")).color(RED)).on_hover_text(err);
+        }
         if self.snap.agents.is_empty() {
             ui.label(RichText::new("No agents yet. Start with an orchestrator.").weak());
         }

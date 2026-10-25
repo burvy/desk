@@ -5,30 +5,61 @@ use anyhow::{Context, Result, bail};
 use std::fs::{self, OpenOptions};
 use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, SystemTime};
+
+/// A temp file next to `path`, unique to this process and call. Its
+/// extension isn't `.md` or `.toml`, so nothing reads it as the real thing.
+fn temp_for(path: &Path, contents: &str) -> Result<PathBuf> {
+    static N: AtomicU32 = AtomicU32::new(0);
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir)?;
+    }
+    let n = N.fetch_add(1, Ordering::Relaxed);
+    let tmp = path.with_extension(format!("tmp-{}-{n}", std::process::id()));
+    fs::write(&tmp, contents).with_context(|| format!("writing {}", tmp.display()))?;
+    Ok(tmp)
+}
 
 /// Write to a temp file next to `path`, then rename over it.
 pub fn write_atomic(path: &Path, contents: &str) -> Result<()> {
-    if let Some(dir) = path.parent() {
-        fs::create_dir_all(dir)?;
+    let tmp = temp_for(path, contents)?;
+    // On Windows a rename fails while someone (an indexer, an editor) has the
+    // target open; that passes quickly, so try a few times.
+    for attempt in 0.. {
+        match fs::rename(&tmp, path) {
+            Ok(()) => return Ok(()),
+            Err(e) if e.kind() == ErrorKind::PermissionDenied && attempt < 10 => {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            Err(e) => {
+                let _ = fs::remove_file(&tmp);
+                return Err(e).with_context(|| format!("replacing {}", path.display()));
+            }
+        }
     }
-    let tmp = path.with_extension(format!("tmp{}", std::process::id()));
-    fs::write(&tmp, contents).with_context(|| format!("writing {}", tmp.display()))?;
-    fs::rename(&tmp, path).with_context(|| format!("replacing {}", path.display()))
+    unreachable!()
 }
 
-/// Create `path` only if it doesn't exist. Returns false if it does.
+/// Create `path` with its contents in one step, only if it doesn't exist.
+/// Returns false if it does. A hard link from a finished temp file means no
+/// reader ever sees it empty or half-written.
 pub fn create_new(path: &Path, contents: &str) -> Result<bool> {
-    if let Some(dir) = path.parent() {
-        fs::create_dir_all(dir)?;
-    }
-    match OpenOptions::new().write(true).create_new(true).open(path) {
-        Ok(mut f) => {
-            f.write_all(contents.as_bytes())?;
-            Ok(true)
-        }
+    let tmp = temp_for(path, contents)?;
+    let linked = fs::hard_link(&tmp, path);
+    let _ = fs::remove_file(&tmp);
+    match linked {
+        Ok(()) => Ok(true),
         Err(e) if e.kind() == ErrorKind::AlreadyExists => Ok(false),
-        Err(e) => Err(e).with_context(|| format!("creating {}", path.display())),
+        // Some network drives can't hard-link: create, then write.
+        Err(_) => match OpenOptions::new().write(true).create_new(true).open(path) {
+            Ok(mut f) => {
+                f.write_all(contents.as_bytes())?;
+                Ok(true)
+            }
+            Err(e) if e.kind() == ErrorKind::AlreadyExists => Ok(false),
+            Err(e) => Err(e).with_context(|| format!("creating {}", path.display())),
+        },
     }
 }
 
@@ -65,28 +96,36 @@ pub fn fmt_id(n: u32) -> String {
     format!("{n:03}")
 }
 
-/// A cross-process mutex: a file created with `create_new`.
-/// Stale locks (older than 30s, i.e. a crashed writer) are broken.
-pub struct FileLock(PathBuf);
+/// A cross-process mutex: a file created with `create_new`, holding a token
+/// unique to its holder. Stale locks (older than 30s, i.e. a crashed writer)
+/// are broken. Every holder here keeps it for milliseconds.
+pub struct FileLock {
+    path: PathBuf,
+    token: String,
+}
 
 impl FileLock {
     pub fn acquire(path: PathBuf) -> Result<Self> {
+        static N: AtomicU32 = AtomicU32::new(0);
+        let token = format!("{}-{}-{}", std::process::id(), N.fetch_add(1, Ordering::Relaxed), now_rfc3339());
         for _ in 0..200 {
-            match OpenOptions::new().write(true).create_new(true).open(&path) {
-                Ok(_) => return Ok(FileLock(path)),
-                Err(e) if e.kind() == ErrorKind::AlreadyExists => {
-                    let stale = fs::metadata(&path)
-                        .and_then(|m| m.modified())
-                        .ok()
-                        .and_then(|t| SystemTime::now().duration_since(t).ok())
-                        .is_some_and(|age| age > Duration::from_secs(30));
-                    if stale {
-                        let _ = fs::remove_file(&path);
-                    } else {
-                        std::thread::sleep(Duration::from_millis(25));
-                    }
+            if create_new(&path, &token)? {
+                return Ok(FileLock { path, token });
+            }
+            let stale = fs::metadata(&path)
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| SystemTime::now().duration_since(t).ok())
+                .is_some_and(|age| age > Duration::from_secs(30));
+            if stale {
+                // Rename, don't delete: if two waiters both see it stale, only
+                // one rename succeeds, and neither deletes a fresh lock.
+                let broken = path.with_extension(format!("stale-{token}"));
+                if fs::rename(&path, &broken).is_ok() {
+                    let _ = fs::remove_file(&broken);
                 }
-                Err(e) => return Err(e.into()),
+            } else {
+                std::thread::sleep(Duration::from_millis(25));
             }
         }
         bail!("timed out waiting for {}", path.display())
@@ -95,7 +134,10 @@ impl FileLock {
 
 impl Drop for FileLock {
     fn drop(&mut self) {
-        let _ = fs::remove_file(&self.0);
+        // Only our own: a lock broken as stale may belong to someone else now.
+        if fs::read_to_string(&self.path).is_ok_and(|t| t == self.token) {
+            let _ = fs::remove_file(&self.path);
+        }
     }
 }
 

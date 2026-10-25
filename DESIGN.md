@@ -155,7 +155,7 @@ The orchestrator sets the pace, not the order ideas arrive in.
 ## Asks
 
 Agents ask the human through `asks/`, never buried in chat.
-- `blocking: true`: the task goes to `blocked` and the agent stops spending tokens. The ask appears at the top of the Asks panel.
+- `blocking: true`: the task goes to `blocked`, and the agent stops working on it until you answer (its prompt says so; desk still delivers other mail). The ask appears at the top of the Asks panel.
 - `blocking: false`: the agent carries on, and you answer when you have time.
 
 Answering an ask writes the answer into the ask file and messages the asker.
@@ -166,7 +166,7 @@ Humans add thoughts on the spot, often in the middle of an answer. Every agent's
 
 ## Locks
 
-`desk lock <name>` / `desk unlock <name>` for shared resources (a server, a port, a deploy). A lock records its holder and expires when that agent's process dies. The GUI shows them.
+`desk lock <name>` / `desk unlock <name>` for shared resources (a server, a port, a deploy). A lock records its holder. It's released when the holder unlocks it, or is killed, reset, or stopped after repeated failures, but not at the end of a turn, since one lock (a dev server) often spans several. The GUI shows them.
 
 ## Memory, reset and handoff
 
@@ -182,7 +182,6 @@ Every task passes through `review` before `done`. The reviewer checks the work a
 
 A model is identified by `<cli>/<provider>/<model>` (for example `opencode/zai/glm-4.6`), because one CLI like OpenCode or Cline can serve many models. `models/<cli>-<provider>-<model>.md` holds the orchestrator's notes on each model (strengths, weaknesses) and a track record (passed or sent back), updated automatically from review results. The orchestrator picks models with this file and the task's `tier`. An unknown model gets a small calibration task first.
 
-If a provider is rate-limited or down, the agent falls back to the next model listed in `desk.toml`.
 
 ## Safeguards
 
@@ -250,14 +249,14 @@ The prompt goes to stdin unless `args` mention `{prompt_file}`. The only CLI-spe
 - CLIs: edit each preset's TOML, add your own, revert edits.
 - Terminal: a real terminal in the agent's project with desk's environment and its next command printed.
 - Terminal agents: the CLI's own interface, live in the agent view, inside the window. desk types messages in when the screen is quiet and the CLI is at its prompt (the preset's `ready` text). You can click in and type at any time.
-- Pause-all, and take-over: holds the agent's mail and opens its session in a real terminal (`desk take-over` / `hand-back` from the CLI). Later: an embedded `egui_term` pane instead.
+- Pause-all, and take-over: holds the agent's mail. A headless agent's session opens in a real terminal (`desk take-over` / `hand-back` from the CLI); a terminal agent's is already in the window, so you just type.
 
 ## Roadmap
 
 1. **v0:** core + CLI, with Claude and OpenCode agents messaging each other.
 2. **v1:** the GUI.
 3. **First real use:** review a large project built in 3 days. Fix what that reveals.
-4. **Later:** embedded take-over terminals, model calibration, fallbacks, leads (an agent with an orchestrator-style prompt that coordinates one large group).
+4. **Later:** model fallbacks when a provider is down, leads (an agent with an orchestrator-style prompt that coordinates one large group).
 
 ## Permissions and git
 

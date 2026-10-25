@@ -74,7 +74,10 @@ pub fn new(ws: &Workspace, from: &str, task: Option<&str>, blocking: bool, quest
         fsutil::write_atomic(&path, &Doc::new(&fields, format!("{}\n", question.trim())).render())?;
         path
     };
-    if let (true, Some(t)) = (blocking, &task) {
+    // Already blocked: leave it, so unblocking can still find the status before.
+    if let (true, Some(t)) = (blocking, &task)
+        && t.status() != "blocked"
+    {
         task::set(ws, &t.id, "status", "blocked")?;
     }
     let ask = find(ws, &path.file_stem().unwrap_or_default().to_string_lossy())?;

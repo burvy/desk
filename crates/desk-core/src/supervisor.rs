@@ -8,6 +8,7 @@
 use crate::adapter::{Event, Preset, RunSpec};
 use crate::agent::{self, AgentConfig, AgentState};
 use crate::message::{self, Kind, Message};
+use crate::process::{adopt, hide_window, kill_tree};
 use crate::task::Task;
 use crate::workspace::Workspace;
 use crate::{fsutil, lock, prompt};
@@ -27,8 +28,10 @@ pub struct Supervisor {
     pub(crate) runs: HashMap<String, Run>,
     tx: Sender<Update>,
     rx: Receiver<Update>,
-    retry_at: HashMap<String, Instant>,
+    pub(crate) retry_at: HashMap<String, Instant>,
     warned: HashSet<String>,
+    /// The last error each agent's step hit, so it's reported once.
+    errors: HashMap<String, String>,
     #[cfg(feature = "terminal")]
     pub(crate) terms: HashMap<String, crate::term_run::TermAgent>,
     #[cfg(feature = "terminal")]
@@ -37,6 +40,7 @@ pub struct Supervisor {
 
 pub(crate) struct Run {
     pid: u32,
+    resuming: bool,
     delivered: Vec<PathBuf>,
     handoff: bool,
     /// Set when desk stops the run on purpose; the mail stays unread.
@@ -71,6 +75,7 @@ impl Supervisor {
             rx,
             retry_at: HashMap::new(),
             warned: HashSet::new(),
+            errors: HashMap::new(),
             #[cfg(feature = "terminal")]
             terms: HashMap::new(),
             #[cfg(feature = "terminal")]
@@ -117,8 +122,19 @@ impl Supervisor {
         }
 
         for name in agent::names(&self.ws) {
-            if let Err(e) = self.step(&name, paused, &mut notes) {
-                notes.push(format!("{name}: {e:#}"));
+            // A broken agent.toml fails every tick; say so once, not twice a second.
+            match self.step(&name, paused, &mut notes) {
+                Ok(()) => {
+                    self.errors.remove(&name);
+                }
+                Err(e) => {
+                    let e = format!("{e:#}");
+                    if self.errors.get(&name) != Some(&e) {
+                        notes.push(format!("{name}: {e}"));
+                        self.ws.log("agent_error", serde_json::json!({ "agent": name, "error": e }));
+                        self.errors.insert(name, e);
+                    }
+                }
             }
         }
         notes
@@ -149,6 +165,17 @@ impl Supervisor {
         let dir = self.ws.agent_dir(name);
         let mut st = AgentState::load(&self.ws, name);
 
+        // Switched between headless and terminal: end the old kind first, so
+        // one agent never has two CLIs reading the same mail.
+        if cfg.terminal && self.runs.contains_key(name) {
+            self.stop(name, "switched to a terminal", notes);
+            return Ok(());
+        }
+        #[cfg(feature = "terminal")]
+        if !cfg.terminal && self.terms.contains_key(name) {
+            self.close_terminal(name);
+            notes.push(format!("{name}: terminal closed (switched to headless)"));
+        }
         if cfg.terminal {
             #[cfg(feature = "terminal")]
             return self.step_terminal(name, &cfg, &mut st, paused, notes);
@@ -200,7 +227,7 @@ impl Supervisor {
         if paused || st.state == "error" || agent::is_held(&self.ws, name) {
             return Ok(());
         }
-        if self.retry_at.get(name).is_some_and(|t| Instant::now() < *t) {
+        if self.backing_off(name) {
             return Ok(());
         }
         let cap = self.ws.config.max_running;
@@ -208,48 +235,60 @@ impl Supervisor {
             return Ok(());
         }
 
-        if dir.join("RESET").exists() {
-            if st.session.is_some() {
-                let text = prompt::handoff(&self.ws, name);
-                self.launch(name, &cfg, &mut st, text, Vec::new(), true)?;
-                notes.push(format!("{name}: writing handoff before reset"));
-            } else {
+        let (text, delivered, handoff, note) = if dir.join("RESET").exists() {
+            if st.session.is_none() {
                 let _ = std::fs::remove_file(dir.join("RESET"));
                 lock::release_all(&self.ws, name);
                 notes.push(format!("{name}: reset (no session to hand off)"));
+                return Ok(());
             }
-            return Ok(());
-        }
-
-        let unread = message::unread(&self.ws, name);
-        if unread.is_empty() {
-            return Ok(());
-        }
-        let (batch, task) = pick_batch(&cfg, unread);
-        let task = task.and_then(|id| Task::find(&self.ws, &id).ok());
-        let preset = Preset::load(&self.ws, &cfg.cli)?;
-        let role =
-            if preset.system_prompt() { None } else { std::fs::read_to_string(cfg.role_file(&self.ws)).ok() };
-        let text = if batch[0].kind == Kind::Raw {
-            batch[0].body.trim_end().to_string()
-        } else {
-            prompt::delivery(
-                &self.ws,
-                &prompt::Delivery {
-                    name,
-                    dir: &cfg.dir,
-                    new_session: st.session.is_none(),
-                    role: role.as_deref(),
-                    task: task.as_ref(),
-                    messages: &batch,
-                },
+            (
+                prompt::handoff(&self.ws, name),
+                Vec::new(),
+                true,
+                format!("{name}: writing handoff before reset"),
             )
+        } else {
+            let unread = message::unread(&self.ws, name);
+            if unread.is_empty() {
+                return Ok(());
+            }
+            let (batch, task) = pick_batch(&cfg, unread);
+            let task = task.and_then(|id| Task::find(&self.ws, &id).ok());
+            let preset = Preset::load(&self.ws, &cfg.cli)?;
+            let role = if preset.system_prompt() {
+                None
+            } else {
+                std::fs::read_to_string(cfg.role_file(&self.ws)).ok()
+            };
+            let text = if batch[0].kind == Kind::Raw {
+                batch[0].body.trim_end().to_string()
+            } else {
+                prompt::delivery(
+                    &self.ws,
+                    &prompt::Delivery {
+                        name,
+                        dir: &cfg.dir,
+                        new_session: st.session.is_none(),
+                        role: role.as_deref(),
+                        task: task.as_ref(),
+                        messages: &batch,
+                    },
+                )
+            };
+            let delivered: Vec<PathBuf> = batch.iter().map(|m| m.path.clone()).collect();
+            let n = delivered.len();
+            let about = task.map(|t| format!(" about task {}", t.id)).unwrap_or_default();
+            let note = format!("{name}: started with {n} message{}{about}", if n == 1 { "" } else { "s" });
+            (text, delivered, false, note)
         };
-        let delivered: Vec<PathBuf> = batch.iter().map(|m| m.path.clone()).collect();
-        let n = delivered.len();
-        self.launch(name, &cfg, &mut st, text, delivered, false)?;
-        let about = task.map(|t| format!(" about task {}", t.id)).unwrap_or_default();
-        notes.push(format!("{name}: started with {n} message{}{about}", if n == 1 { "" } else { "s" }));
+        // A CLI that won't start (not installed, bad folder) backs off like a failed run.
+        if let Err(e) = self.launch(name, &cfg, &mut st, text, delivered, handoff) {
+            self.fail(name, &mut st, format!("couldn't start the CLI: {e:#}"), notes);
+            st.save(&self.ws, name)?;
+            return Ok(());
+        }
+        notes.push(note);
         Ok(())
     }
 
@@ -280,6 +319,7 @@ impl Supervisor {
         hide_window(&mut cmd);
         let mut child = cmd.spawn().with_context(|| format!("starting `{}`", cfg.cli))?;
         let pid = child.id();
+        adopt(pid);
 
         if let Some(mut stdin) = child.stdin.take() {
             let input = prompt.clone();
@@ -318,7 +358,8 @@ impl Supervisor {
             "run_start",
             serde_json::json!({ "agent": name, "pid": pid, "messages": delivered, "handoff": handoff }),
         );
-        self.runs.insert(name.to_string(), Run { pid, delivered, handoff, stopping: None, error: None });
+        self.runs
+            .insert(name.to_string(), Run { pid, resuming, delivered, handoff, stopping: None, error: None });
         Ok(())
     }
 
@@ -354,7 +395,8 @@ impl Supervisor {
         st.state = "idle".into();
         let dir = self.ws.agent_dir(name);
 
-        if let Some(reason) = run.stopping {
+        // A run that finished just as desk stopped it still finished: keep its mail read.
+        if let Some(reason) = run.stopping.filter(|_| !(ok && run.error.is_none())) {
             notes.push(format!("{name}: stopped ({reason})"));
         } else if ok && run.error.is_none() {
             let _ = message::mark_read(&self.ws, name, &run.delivered);
@@ -371,30 +413,46 @@ impl Supervisor {
                 notes.push(format!("{name}: done"));
             }
         } else {
-            st.failures += 1;
-            let err = run.error.unwrap_or_else(|| "the CLI exited with an error (see stderr.log)".into());
-            st.last_error = Some(err.clone());
-            if st.failures >= MAX_FAILURES {
-                st.state = "error".into();
-                lock::release_all(&self.ws, name);
-                notes.push(format!("{name}: stopped after {} failures: {err}", st.failures));
-                let body = format!(
-                    "{name} failed {} times in a row and has stopped.\n\nLast error: {err}\n\n\
-                     Its mail is still unread. Fix the cause, then `desk resume {name}`.",
-                    st.failures
-                );
-                let _ = message::send(&self.ws, "desk", &self.ws.config.human, None, Kind::Note, &body);
-            } else {
-                let wait = Duration::from_secs(30 * 2u64.pow(st.failures - 1));
-                self.retry_at.insert(name.to_string(), Instant::now() + wait);
-                notes.push(format!("{name}: failed ({err}); retrying in {}s", wait.as_secs()));
+            // A session that never got going (a named one, say) isn't worth resuming.
+            if !run.resuming {
+                st.session = None;
             }
+            let err = run.error.unwrap_or_else(|| "the CLI exited with an error (see stderr.log)".into());
+            self.fail(name, &mut st, err, notes);
         }
         let _ = st.save(&self.ws, name);
         self.ws.log(
             "run_end",
             serde_json::json!({ "agent": name, "ok": ok, "stopped": run.stopping, "error": st.last_error }),
         );
+    }
+
+    /// Counts a failure: retry after 30s, then 60s, then stop and tell the human.
+    pub(crate) fn fail(&mut self, name: &str, st: &mut AgentState, err: String, notes: &mut Vec<String>) {
+        st.failures += 1;
+        st.last_error = Some(err.clone());
+        if st.failures >= MAX_FAILURES {
+            st.state = "error".into();
+            self.retry_at.remove(name);
+            lock::release_all(&self.ws, name);
+            notes.push(format!("{name}: stopped after {} failures: {err}", st.failures));
+            let body = format!(
+                "{name} failed {} times in a row and has stopped.\n\nLast error: {err}\n\n\
+                 Its mail is still unread. Fix the cause, then `desk resume {name}`.",
+                st.failures
+            );
+            let _ = message::send(&self.ws, "desk", &self.ws.config.human, None, Kind::Note, &body);
+        } else {
+            st.state = "idle".into();
+            let wait = Duration::from_secs(30 * 2u64.pow(st.failures - 1));
+            self.retry_at.insert(name.to_string(), Instant::now() + wait);
+            notes.push(format!("{name}: failed ({err}); retrying in {}s", wait.as_secs()));
+        }
+    }
+
+    /// Whether `name` is waiting out a failure.
+    pub(crate) fn backing_off(&self, name: &str) -> bool {
+        self.retry_at.get(name).is_some_and(|t| Instant::now() < *t)
     }
 
     fn stop(&mut self, name: &str, reason: &'static str, notes: &mut Vec<String>) {
@@ -448,8 +506,10 @@ pub(crate) fn pick_batch(cfg: &AgentConfig, mut unread: Vec<Message>) -> (Vec<Me
     if !cfg.is_orchestrator() {
         return (unread, None);
     }
+    // Interrupts always come along, whatever their task: an interrupt left out
+    // of the batch would stop the run it was left out of, again and again.
     let task = unread[0].task.clone();
-    let batch = unread.into_iter().filter(|m| m.task == task).collect();
+    let batch = unread.into_iter().filter(|m| m.kind == Kind::Interrupt || m.task == task).collect();
     (batch, task)
 }
 
@@ -485,6 +545,7 @@ fn agent_command(
     Ok(cmd)
 }
 
+#[cfg(feature = "terminal")]
 /// The environment desk gives an agent's CLI, as plain pairs (an empty
 /// value clears a variable), for terminals.
 pub(crate) fn agent_env(
@@ -636,34 +697,6 @@ fn path_with_desk() -> Result<std::ffi::OsString> {
     Ok(std::env::join_paths(dirs)?)
 }
 
-#[cfg(windows)]
-fn hide_window(cmd: &mut std::process::Command) {
-    use std::os::windows::process::CommandExt;
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    cmd.creation_flags(CREATE_NO_WINDOW);
-}
-
-#[cfg(unix)]
-fn hide_window(cmd: &mut std::process::Command) {
-    use std::os::unix::process::CommandExt;
-    cmd.process_group(0); // so kill_tree can take the whole group
-}
-
-/// Agent CLIs start their own children (shells, servers); take them all down.
-pub(crate) fn kill_tree(pid: u32) {
-    let mut cmd = if cfg!(windows) {
-        let mut c = std::process::Command::new("taskkill");
-        c.args(["/T", "/F", "/PID", &pid.to_string()]);
-        c
-    } else {
-        let mut c = std::process::Command::new("kill");
-        c.args(["-TERM", &format!("-{pid}")]);
-        c
-    };
-    hide_window(&mut cmd);
-    let _ = cmd.stdout(Stdio::null()).stderr(Stdio::null()).status();
-}
-
 /// Writes a run's lines to `<session>.jsonl`. Until the session id is known
 /// (first run of a session) lines wait in memory.
 struct TranscriptWriter {
@@ -745,5 +778,32 @@ mod tests {
         // Interrupts still jump the queue.
         let unread = vec![msg("2", Kind::Raw), msg("4", Kind::Interrupt)];
         assert_eq!(names(pick_batch(&cfg, unread)), ["4"]);
+    }
+
+    #[test]
+    fn orchestrator_batches_keep_every_interrupt() {
+        let cfg = AgentConfig { role: "orchestrator".into(), ..test_cfg() };
+        let on = |name: &str, kind, task: &str| Message { task: Some(task.into()), ..msg(name, kind) };
+        let unread = vec![
+            on("a", Kind::Interrupt, "003"),
+            on("b", Kind::Interrupt, "005"),
+            on("c", Kind::Note, "005"),
+        ];
+        let (batch, task) = pick_batch(&cfg, unread);
+        let names: Vec<_> = batch.into_iter().map(|m| m.body).collect();
+        // One task's notes per turn, but no interrupt left out: it would stop the run forever.
+        assert_eq!((names, task.as_deref()), (vec!["a".to_string(), "b".into()], Some("003")));
+    }
+
+    fn test_cfg() -> AgentConfig {
+        AgentConfig {
+            cli: "opencode".into(),
+            model: String::new(),
+            dir: ".".into(),
+            role: "worker".into(),
+            permissions: "bypass".into(),
+            active: true,
+            terminal: false,
+        }
     }
 }

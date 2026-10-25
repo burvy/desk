@@ -64,6 +64,10 @@ impl Workspace {
 
     /// Lays out a new workspace. Never overwrites existing files.
     pub fn init(root: &Path, human: &str) -> Result<Self> {
+        check_name(human)?;
+        if root.join("desk.toml").exists() {
+            bail!("{} is already a workspace", root.display());
+        }
         let config = Config { human: human.into(), ..Config::default() };
         let toml = format!(
             "# desk workspace. See DESIGN.md in the desk repo for what each file is.\n\
@@ -172,6 +176,14 @@ impl Workspace {
         }
         Ok(p)
     }
+}
+
+/// Names become folder names and `desk send` arguments: letters, digits, - and _.
+pub fn check_name(name: &str) -> Result<()> {
+    if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+        bail!("`{name}`: names are letters, digits, - and _");
+    }
+    Ok(())
 }
 
 const DEFAULT_CONVENTIONS: &str = "# Conventions

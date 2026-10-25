@@ -1,0 +1,15 @@
+description = "Claude Code"
+program = "claude"
+args = ["-p", "--output-format", "stream-json", "--verbose", "--add-dir", "{workspace}"]
+model_args = ["--model", "{model}"]
+bypass = ["--permission-mode", "bypassPermissions"]
+system = ["--append-system-prompt-file", "{role_file}"]
+session = "stream"
+resume = ["--resume", "{session}"]
+output = "claude"
+interactive = ["claude", "--model", "{model}"]
+models = ["sonnet", "opus", "haiku"]
+
+# Use your claude.ai login, not an API key that happens to be set.
+# Delete this line (in a copy under the workspace's presets/) to bill the key instead.
+env = { ANTHROPIC_API_KEY = "" }

@@ -9,7 +9,7 @@ use std::path::PathBuf;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentConfig {
-    /// `claude` or `opencode`.
+    /// The CLI preset: `claude`, `opencode`, `goose`... (see `desk presets`).
     pub cli: String,
     /// Whatever the CLI accepts: `sonnet`, `opencode/glm-5.3-flash-free`.
     pub model: String,
@@ -101,9 +101,7 @@ pub fn spawn(ws: &Workspace, name: &str, config: AgentConfig) -> Result<()> {
     if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
         bail!("agent names are letters, digits, - and _");
     }
-    if !matches!(config.cli.as_str(), "claude" | "opencode") {
-        bail!("unknown cli `{}` (claude, opencode)", config.cli);
-    }
+    crate::adapter::Preset::load(ws, &config.cli)?;
     if !config.role_file(ws).is_file() {
         bail!("no prompt file at {}", config.role_file(ws).display());
     }
@@ -138,10 +136,11 @@ pub fn request_reset(ws: &Workspace, name: &str) -> Result<()> {
 /// Returns the command line that opens the session interactively.
 pub fn take_over(ws: &Workspace, name: &str) -> Result<Vec<String>> {
     let cfg = AgentConfig::load(ws, name)?;
+    let cmd = crate::adapter::Preset::load(ws, &cfg.cli)?
+        .interactive(&cfg, AgentState::load(ws, name).session.as_deref())?;
     fsutil::write_atomic(&ws.agent_dir(name).join("HELD"), "")?;
     ws.log("take_over", serde_json::json!({ "agent": name }));
-    let adapter = crate::adapter::for_cli(&cfg.cli).context("unknown cli")?;
-    Ok(adapter.interactive(&cfg, AgentState::load(ws, name).session.as_deref()))
+    Ok(cmd)
 }
 
 /// Ends a take-over; mail that arrived meanwhile is delivered.

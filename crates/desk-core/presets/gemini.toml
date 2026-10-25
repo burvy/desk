@@ -1,0 +1,10 @@
+# Flags from `gemini --help`; not yet run by desk. The prompt arrives on stdin;
+# -p makes the run headless (its text is appended after stdin).
+description = "Gemini CLI (untested)"
+program = "gemini"
+args = ["--output-format", "text", "-p", "Follow the instructions above."]
+model_args = ["--model", "{model}"]
+bypass = ["--approval-mode", "yolo"]
+session = "none"
+output = "text"
+interactive = ["gemini"]

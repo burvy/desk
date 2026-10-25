@@ -5,7 +5,7 @@
 //! files, polling works the same on every drive, and missed events can't
 //! wedge it. One supervisor per workspace, enforced by a heartbeat file.
 
-use crate::adapter::{self, Event, RunSpec};
+use crate::adapter::{Event, Preset, RunSpec};
 use crate::agent::{self, AgentConfig, AgentState};
 use crate::message::{self, Kind, Message};
 use crate::task::Task;
@@ -191,23 +191,24 @@ impl Supervisor {
         }
         let (batch, task) = pick_batch(&cfg, unread);
         let task = task.and_then(|id| Task::find(&self.ws, &id).ok());
-        let adapter = adapter::for_cli(&cfg.cli).context("unknown cli")?;
-        let role = if adapter.system_prompt() {
-            None
+        let preset = Preset::load(&self.ws, &cfg.cli)?;
+        let role =
+            if preset.system_prompt() { None } else { std::fs::read_to_string(cfg.role_file(&self.ws)).ok() };
+        let text = if batch[0].kind == Kind::Raw {
+            batch[0].body.trim_end().to_string()
         } else {
-            std::fs::read_to_string(cfg.role_file(&self.ws)).ok()
+            prompt::delivery(
+                &self.ws,
+                &prompt::Delivery {
+                    name,
+                    dir: &cfg.dir,
+                    new_session: st.session.is_none(),
+                    role: role.as_deref(),
+                    task: task.as_ref(),
+                    messages: &batch,
+                },
+            )
         };
-        let text = prompt::delivery(
-            &self.ws,
-            &prompt::Delivery {
-                name,
-                dir: &cfg.dir,
-                new_session: st.session.is_none(),
-                role: role.as_deref(),
-                task: task.as_ref(),
-                messages: &batch,
-            },
-        );
         let delivered: Vec<PathBuf> = batch.iter().map(|m| m.path.clone()).collect();
         let n = delivered.len();
         self.launch(name, &cfg, &mut st, text, delivered, false)?;
@@ -225,11 +226,25 @@ impl Supervisor {
         delivered: Vec<PathBuf>,
         handoff: bool,
     ) -> Result<()> {
-        let adapter = adapter::for_cli(&cfg.cli).context("unknown cli")?;
+        let preset = Preset::load(&self.ws, &cfg.cli)?;
+        let resuming = st.session.is_some();
+        if preset.session == "named" && st.session.is_none() {
+            st.session = Some(format!("desk-{name}-{}", chrono::Local::now().format("%Y%m%d-%H%M%S")));
+        }
         let role_file = cfg.role_file(&self.ws);
-        let spec =
-            RunSpec { cfg, session: st.session.as_deref(), role_file: &role_file, workspace: &self.ws.root };
-        let mut cmd = adapter.command(&spec);
+        let prompt_file = self.ws.agent_dir(name).join("scratch/prompt.md");
+        if preset.uses_prompt_file() {
+            fsutil::write_atomic(&prompt_file, &prompt)?;
+        }
+        let spec = RunSpec {
+            cfg,
+            session: st.session.as_deref(),
+            resuming,
+            role_file: &role_file,
+            prompt_file: &prompt_file,
+            workspace: &self.ws.root,
+        };
+        let mut cmd = preset.command(&spec);
 
         let tdir = self.ws.transcripts_dir(name);
         std::fs::create_dir_all(&tdir)?;
@@ -239,18 +254,19 @@ impl Supervisor {
             // Some CLIs (OpenCode) trust an inherited $PWD over the real cwd.
             .env("PWD", &cfg.dir)
             .env("PATH", path_with_desk()?)
-            .stdin(Stdio::piped())
+            .stdin(if preset.uses_prompt_file() { Stdio::null() } else { Stdio::piped() })
             .stdout(Stdio::piped())
             .stderr(stderr);
         hide_window(&mut cmd);
         let mut child = cmd.spawn().with_context(|| format!("starting `{}`", cfg.cli))?;
         let pid = child.id();
 
-        let mut stdin = child.stdin.take().context("no stdin")?;
-        let input = prompt.clone();
-        std::thread::spawn(move || {
-            let _ = stdin.write_all(input.as_bytes());
-        });
+        if let Some(mut stdin) = child.stdin.take() {
+            let input = prompt.clone();
+            std::thread::spawn(move || {
+                let _ = stdin.write_all(input.as_bytes());
+            });
+        }
 
         let stdout = child.stdout.take().context("no stdout")?;
         let tx = self.tx.clone();
@@ -263,7 +279,7 @@ impl Supervisor {
                     .to_string(),
             );
             for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-                for e in adapter.parse(&line) {
+                for e in preset.parse_line(&line) {
                     if let Event::Session(s) = &e {
                         log.set_session(s);
                     }
@@ -403,6 +419,12 @@ impl Drop for Supervisor {
 /// one task's mail per turn, so it never juggles unrelated work.
 fn pick_batch(cfg: &AgentConfig, mut unread: Vec<Message>) -> (Vec<Message>, Option<String>) {
     unread.sort_by_key(|m| m.kind != Kind::Interrupt); // stable: oldest first otherwise
+    // A raw message is a run of its own, in order: the CLI gets its text verbatim.
+    match unread.iter().position(|m| m.kind == Kind::Raw) {
+        Some(0) => return (vec![unread.remove(0)], None),
+        Some(i) => unread.truncate(i),
+        None => {}
+    }
     if !cfg.is_orchestrator() {
         return (unread, None);
     }
@@ -508,5 +530,41 @@ impl TranscriptWriter {
         if self.file.is_none() && !self.pending.is_empty() {
             self.open(&format!("nosession-{}.jsonl", chrono::Local::now().format("%Y%m%dT%H%M%S")));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn msg(name: &str, kind: Kind) -> Message {
+        Message {
+            path: PathBuf::from(name),
+            from: "a".into(),
+            to: "b".into(),
+            task: None,
+            kind,
+            body: name.into(),
+        }
+    }
+
+    #[test]
+    fn raw_messages_run_alone_and_in_order() {
+        let cfg = AgentConfig {
+            cli: "opencode".into(),
+            model: String::new(),
+            dir: ".".into(),
+            role: "worker".into(),
+            permissions: "bypass".into(),
+            active: true,
+        };
+        let names = |b: (Vec<Message>, Option<String>)| b.0.into_iter().map(|m| m.body).collect::<Vec<_>>();
+        let unread = vec![msg("1", Kind::Note), msg("2", Kind::Raw), msg("3", Kind::Note)];
+        assert_eq!(names(pick_batch(&cfg, unread)), ["1"]);
+        let unread = vec![msg("2", Kind::Raw), msg("3", Kind::Note)];
+        assert_eq!(names(pick_batch(&cfg, unread)), ["2"]);
+        // Interrupts still jump the queue.
+        let unread = vec![msg("2", Kind::Raw), msg("4", Kind::Interrupt)];
+        assert_eq!(names(pick_batch(&cfg, unread)), ["4"]);
     }
 }

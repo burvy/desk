@@ -1,0 +1,10 @@
+description = "OpenCode: many providers, including free models"
+program = "opencode"
+args = ["run", "--format", "json"]
+model_args = ["--model", "{model}"]
+bypass = ["--auto"]
+session = "stream"
+resume = ["--session", "{session}"]
+output = "opencode"
+interactive = ["opencode"]
+models = ["opencode/glm-5.3-flash-free"]

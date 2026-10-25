@@ -1,0 +1,10 @@
+# Flags from `qwen --help`; not yet run by desk. The prompt arrives on stdin;
+# the positional prompt makes the run one-shot (its text is appended after stdin).
+description = "Qwen Code (untested)"
+program = "qwen"
+args = ["--output-format", "text", "Follow the instructions above."]
+model_args = ["--model", "{model}"]
+bypass = ["--approval-mode", "yolo"]
+session = "none"
+output = "text"
+interactive = ["qwen"]

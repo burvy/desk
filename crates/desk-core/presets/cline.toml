@@ -1,0 +1,10 @@
+# Flags from `cline --help` (3.0); not yet run by desk. Cline takes its prompt
+# as an argument, so desk writes it to a file and points Cline at it.
+# Cline auto-approves tools by default, so `bypass` adds nothing.
+description = "Cline CLI (untested)"
+program = "cline"
+args = ["Read {prompt_file} and do what it says."]
+model_args = ["--model", "{model}"]
+session = "none"
+output = "text"
+interactive = ["cline", "--tui"]

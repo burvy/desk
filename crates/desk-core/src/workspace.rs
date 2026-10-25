@@ -71,7 +71,7 @@ impl Workspace {
              # [projects]\n# game = \"Z:/path/to/game\"\n",
             toml::to_string(&Config { projects: BTreeMap::new(), ..config.clone() })?
         );
-        let files: [(&str, &str); 7] = [
+        let files: [(&str, &str); 8] = [
             ("desk.toml", &toml),
             ("DESIGN.md", "# Design\n\nThe orchestrator drafts this on onboarding.\n"),
             ("DECISIONS.md", "# Decisions\n\nOne line per decision, with the reason.\n\n"),
@@ -79,6 +79,7 @@ impl Workspace {
             ("CONVENTIONS.md", DEFAULT_CONVENTIONS),
             ("prompts/orchestrator.md", include_str!("../prompts/orchestrator.md")),
             ("prompts/worker.md", include_str!("../prompts/worker.md")),
+            ("presets/README.md", include_str!("../presets/README.md")),
         ];
         for (rel, text) in files {
             fsutil::create_new(&root.join(rel), text)?;

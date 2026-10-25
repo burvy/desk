@@ -1,7 +1,7 @@
 //! Transcripts: `log/transcripts/<agent>/<session>.jsonl`, the CLI's raw
 //! stream plus desk's own `{"desk": ...}` lines (the prompt it delivered).
 
-use crate::adapter::{Adapter, Event, clip};
+use crate::adapter::{Event, Preset, clip};
 use crate::workspace::Workspace;
 use std::path::{Path, PathBuf};
 
@@ -25,7 +25,7 @@ pub fn latest(ws: &Workspace, agent: &str) -> Option<PathBuf> {
         .map(|e| e.path())
 }
 
-pub fn entries(adapter: &dyn Adapter, path: &Path) -> Vec<Entry> {
+pub fn entries(preset: &Preset, path: &Path) -> Vec<Entry> {
     let text = std::fs::read_to_string(path).unwrap_or_default();
     let mut out = Vec::new();
     for line in text.lines() {
@@ -39,7 +39,7 @@ pub fn entries(adapter: &dyn Adapter, path: &Path) -> Vec<Entry> {
             continue;
         }
         out.extend(
-            adapter.parse(line).into_iter().filter(|e| !matches!(e, Event::Session(_))).map(Entry::Event),
+            preset.parse_line(line).into_iter().filter(|e| !matches!(e, Event::Session(_))).map(Entry::Event),
         );
     }
     out

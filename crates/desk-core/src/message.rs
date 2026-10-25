@@ -11,6 +11,9 @@ use std::path::{Path, PathBuf};
 pub enum Kind {
     Note,
     Interrupt,
+    /// Delivered alone and verbatim, without desk's framing: `/compact` and
+    /// other CLI commands, if the CLI supports them headless.
+    Raw,
 }
 
 impl Kind {
@@ -18,6 +21,7 @@ impl Kind {
         match self {
             Kind::Note => "note",
             Kind::Interrupt => "interrupt",
+            Kind::Raw => "raw",
         }
     }
 }
@@ -42,6 +46,7 @@ impl Message {
             task: doc.get("task"),
             kind: match doc.get("kind").as_deref() {
                 Some("interrupt") => Kind::Interrupt,
+                Some("raw") => Kind::Raw,
                 _ => Kind::Note,
             },
             body: doc.body,

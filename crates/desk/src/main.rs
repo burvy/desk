@@ -1,9 +1,9 @@
 //! `desk`: the command line. What agents call, and what you call.
 //! Every command is a thin wrapper over desk-core.
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
 use clap::{Parser, Subcommand};
-use desk_core::adapter::{self, Event};
+use desk_core::adapter::{self, Event, Preset};
 use desk_core::agent::{self, AgentConfig, AgentState};
 use desk_core::message::{self, Kind};
 use desk_core::supervisor::{self, Supervisor};
@@ -46,6 +46,9 @@ enum Cmd {
         /// Stop the recipient's current run and deliver this first.
         #[arg(long)]
         interrupt: bool,
+        /// Deliver the text alone and verbatim, as its own run (e.g. `/compact`).
+        #[arg(long)]
+        raw: bool,
         #[arg(required = true, num_args = 1.., allow_hyphen_values = true)]
         message: Vec<String>,
     },
@@ -58,9 +61,11 @@ enum Cmd {
     /// Create an agent, or reactivate one with new settings. Memory is kept.
     Spawn {
         name: String,
+        /// A CLI preset (`desk presets` lists them).
         #[arg(long)]
         cli: String,
-        #[arg(long)]
+        /// Whatever the CLI accepts. Empty: the CLI's own default.
+        #[arg(long, default_value = "")]
         model: String,
         /// The project folder, or a project name from desk.toml.
         #[arg(long)]
@@ -72,6 +77,8 @@ enum Cmd {
         #[arg(long, default_value = "bypass")]
         permissions: String,
     },
+    /// List the CLI presets agents can use, and whether each CLI is installed.
+    Presets,
     /// Stop an agent and release its locks. Its files are kept.
     Kill {
         name: String,
@@ -194,11 +201,24 @@ fn run(cli: Cli) -> Result<()> {
     match cli.cmd {
         Cmd::Init { .. } => unreachable!(),
         Cmd::Run => supervise(ws)?,
-        Cmd::Send { to, task, interrupt, mut message } => {
+        Cmd::Send { to, task, interrupt, raw, mut message } => {
             let task = task.or(take_value(&mut message, "--task"));
             let interrupt = interrupt | take_flag(&mut message, "--interrupt");
-            let kind = if interrupt { Kind::Interrupt } else { Kind::Note };
-            let path = message::send(&ws, &me, &to, task.as_deref(), kind, &text(message)?)?;
+            let raw = raw | take_flag(&mut message, "--raw");
+            let kind = match (raw, interrupt) {
+                (true, _) => Kind::Raw,
+                (_, true) => Kind::Interrupt,
+                _ => Kind::Note,
+            };
+            let body = text(message)?;
+            // Git Bash rewrites a lone `/compact` argument into `C:/Program Files/Git/compact`.
+            if raw && std::env::var_os("MSYSTEM").is_some() && std::path::Path::new(body.trim()).is_absolute()
+            {
+                bail!(
+                    "Git Bash turned the message into a path ({body}). Pass it on stdin instead: `echo /compact | desk send {to} --raw -`"
+                );
+            }
+            let path = message::send(&ws, &me, &to, task.as_deref(), kind, &body)?;
             println!("sent to {to} ({})", path.display());
             if !supervisor::is_alive(&ws) && to != ws.config.human {
                 eprintln!("note: no supervisor is running, so it waits until `desk run`");
@@ -211,7 +231,11 @@ fn run(cli: Cli) -> Result<()> {
             }
             for m in &unread {
                 let task = m.task.as_ref().map(|t| format!(" · task {t}")).unwrap_or_default();
-                let kind = if m.kind == Kind::Interrupt { " · INTERRUPT" } else { "" };
+                let kind = match m.kind {
+                    Kind::Interrupt => " · INTERRUPT",
+                    Kind::Raw => " · RAW",
+                    Kind::Note => "",
+                };
                 println!("── from {}{task}{kind} ──\n{}\n", m.from, m.body.trim_end());
             }
             if !keep {
@@ -223,6 +247,21 @@ fn run(cli: Cli) -> Result<()> {
             let dir = ws.resolve_dir(&dir)?;
             agent::spawn(&ws, &name, AgentConfig { cli, model, dir, role, permissions, active: true })?;
             println!("{name} is ready. It starts when it gets a message.");
+        }
+        Cmd::Presets => {
+            for name in adapter::names(&ws) {
+                match Preset::load(&ws, &name) {
+                    Ok(p) => {
+                        let found = if p.installed() { "" } else { "  (not installed)" };
+                        println!("{name:<10} {}{found}", p.description);
+                    }
+                    Err(e) => println!("{name:<10} broken: {e:#}"),
+                }
+            }
+            println!(
+                "
+Add or override one with presets/<name>.toml in the workspace."
+            );
         }
         Cmd::Kill { name } => {
             agent::kill(&ws, &name)?;
@@ -341,9 +380,9 @@ fn chrono_now() -> String {
 
 fn peek(ws: &Workspace, name: &str, n: usize) -> Result<()> {
     let cfg = AgentConfig::load(ws, name)?;
-    let adapter = adapter::for_cli(&cfg.cli).context("unknown cli")?;
+    let preset = Preset::load(ws, &cfg.cli)?;
     let Some(path) = transcript::latest(ws, name) else { bail!("{name} has no transcript yet") };
-    let entries: Vec<Entry> = transcript::entries(adapter, &path)
+    let entries: Vec<Entry> = transcript::entries(&preset, &path)
         .into_iter()
         .filter(|e| !matches!(e, Entry::Event(Event::Usage { .. })))
         .collect();

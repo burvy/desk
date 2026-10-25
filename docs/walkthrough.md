@@ -78,3 +78,11 @@ Bugs found by running it, all fixed:
 - `supervisor::command_line` builds an agent's next command with the same `agent_command` the supervisor uses, so what you see is what desk runs. `CommandLine::script` wraps it in a `.cmd` with desk's environment. Terminal writes that to `scratch/terminal.cmd` and opens it in Windows Terminal.
 - **Tested:** the script ran in `cmd`. It set the environment, put `desk` first on PATH, and the printed command replayed rook's last prompt and continued its session. Saving, overriding, reverting and typo rejection are unit-tested.
 - **Not clicked:** the CLIs view and the Terminal button (the same mouse reason as before). The zcode preset never ran.
+
+## Then: terminal agents
+
+- `terminal.rs` (core, `terminal` feature) runs a CLI in a pseudo-terminal through `alacritty_terminal`. It also types into it (`write`, `paste`) and reads its screen (`text`).
+- `term_run.rs` is the supervisor's side. Each tick it hashes the screen, and once it has been quiet for 3s and shows the preset's `ready` text, it types the next delivery in. The registry it fills is how the GUI finds each terminal.
+- `term_view.rs` (GUI) draws the screen cell by cell and turns keys, paste, clicks and scrolling into terminal input.
+- **Tested:** OpenCode's TUI ran in the window. A message typed in by desk was done end to end: a file was created, `desk send` reported back, memory was updated, and the agent went back to idle. A raw `/compact` compacted that session. Claude Code's TUI renders; with its trust prompt up, desk left a message unread and marked the agent "waiting" instead of typing. Closing the window ended the whole CLI process tree.
+- **Not tested:** typing into the terminal yourself (that needs your mouse and keyboard), a Claude turn in a terminal (blocked on the trust prompt, which needs a click), and zcode in a terminal.

@@ -76,6 +76,9 @@ enum Cmd {
         /// bypass (no permission prompts) or default.
         #[arg(long, default_value = "bypass")]
         permissions: String,
+        /// Run the CLI interactively in a terminal inside desk-gui, instead of headless.
+        #[arg(long)]
+        terminal: bool,
     },
     /// List the CLI presets agents can use, and whether each CLI is installed.
     Presets,
@@ -250,9 +253,10 @@ fn run(cli: Cli) -> Result<()> {
                 message::mark_read(&ws, &me, &paths)?;
             }
         }
-        Cmd::Spawn { name, cli, model, dir, role, permissions } => {
+        Cmd::Spawn { name, cli, model, dir, role, permissions, terminal } => {
             let dir = ws.resolve_dir(&dir)?;
-            agent::spawn(&ws, &name, AgentConfig { cli, model, dir, role, permissions, active: true })?;
+            let cfg = AgentConfig { cli, model, dir, role, permissions, active: true, terminal };
+            agent::spawn(&ws, &name, cfg)?;
             println!("{name} is ready. It starts when it gets a message.");
         }
         Cmd::Presets => {

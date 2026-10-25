@@ -16,8 +16,9 @@ system = ["--system-file", "{role_file}"]  # omit: the role prompt starts the fi
 session = "none"                        # stream (id read from output) | named (desk names it) | none
 resume = ["--resume", "{session}"]      # when continuing a session
 output = "text"                         # claude | opencode (their JSON streams) | text
-interactive = ["mycli"]                 # take-over; bypass and resume are added
+interactive = ["mycli", "--model", "{model}"]  # take-over and terminal agents
 env = { SOME_KEY = "" }                 # set variables; "" removes one
+model_env = { MYCLI_MODEL = "{model}" } # set only when the agent sets a model
 models = ["model-a"]                    # suggestions in the GUI
 ```
 
@@ -28,3 +29,10 @@ writes it to that file and the CLI is pointed at it.
 With `session = "none"` every run starts fresh, and the agent relies on its
 memory.md. With `output = "text"` the transcript shows the CLI's plain output,
 so tool calls and token counts only appear if the CLI prints them.
+
+In `interactive`, an option whose value is `{model}` or `{session}` is left
+out when that's empty. Terminal agents run `interactive` (plus `bypass` and
+`system`) in a terminal inside desk-gui, and desk types their messages in.
+`interrupt` is what stops a turn there (default: Escape). `ready` is text the
+screen shows only when the CLI is waiting for a message; desk types only then,
+so it never answers a trust or permission prompt for you.

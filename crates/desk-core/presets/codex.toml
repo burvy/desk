@@ -7,4 +7,4 @@ model_args = ["--model", "{model}"]
 bypass = ["--dangerously-bypass-approvals-and-sandbox"]
 session = "none"
 output = "text"
-interactive = ["codex"]
+interactive = ["codex", "--model", "{model}"]

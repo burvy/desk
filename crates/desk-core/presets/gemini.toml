@@ -7,4 +7,4 @@ model_args = ["--model", "{model}"]
 bypass = ["--approval-mode", "yolo"]
 session = "none"
 output = "text"
-interactive = ["gemini"]
+interactive = ["gemini", "--model", "{model}"]

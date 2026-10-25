@@ -12,7 +12,13 @@ pub mod models;
 pub mod prompt;
 pub mod supervisor;
 pub mod task;
+#[cfg(feature = "terminal")]
+mod term_run;
+#[cfg(feature = "terminal")]
+pub mod terminal;
 pub mod transcript;
 pub mod workspace;
 
+#[cfg(feature = "terminal")]
+pub use term_run::Registry;
 pub use workspace::Workspace;

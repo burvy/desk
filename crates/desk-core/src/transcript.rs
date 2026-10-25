@@ -38,6 +38,13 @@ pub fn entries(preset: &Preset, path: &Path) -> Vec<Entry> {
             });
             continue;
         }
+        // A terminal agent's screen after a turn.
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(line)
+            && v["desk"] == "screen"
+        {
+            out.push(Entry::Event(Event::Text(v["text"].as_str().unwrap_or("").into())));
+            continue;
+        }
         out.extend(
             preset.parse_line(line).into_iter().filter(|e| !matches!(e, Event::Session(_))).map(Entry::Event),
         );

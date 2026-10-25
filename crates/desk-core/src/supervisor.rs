@@ -23,15 +23,19 @@ const MAX_FAILURES: u32 = 3;
 const HEARTBEAT_STALE: Duration = Duration::from_secs(5);
 
 pub struct Supervisor {
-    ws: Workspace,
-    runs: HashMap<String, Run>,
+    pub(crate) ws: Workspace,
+    pub(crate) runs: HashMap<String, Run>,
     tx: Sender<Update>,
     rx: Receiver<Update>,
     retry_at: HashMap<String, Instant>,
     warned: HashSet<String>,
+    #[cfg(feature = "terminal")]
+    pub(crate) terms: HashMap<String, crate::term_run::TermAgent>,
+    #[cfg(feature = "terminal")]
+    pub(crate) registry: crate::term_run::Registry,
 }
 
-struct Run {
+pub(crate) struct Run {
     pid: u32,
     delivered: Vec<PathBuf>,
     handoff: bool,
@@ -60,8 +64,18 @@ impl Supervisor {
             }
         }
         let (tx, rx) = channel();
-        let s =
-            Supervisor { ws, runs: HashMap::new(), tx, rx, retry_at: HashMap::new(), warned: HashSet::new() };
+        let s = Supervisor {
+            ws,
+            runs: HashMap::new(),
+            tx,
+            rx,
+            retry_at: HashMap::new(),
+            warned: HashSet::new(),
+            #[cfg(feature = "terminal")]
+            terms: HashMap::new(),
+            #[cfg(feature = "terminal")]
+            registry: Default::default(),
+        };
         s.beat()?;
         s.ws.log("supervisor_start", serde_json::json!({ "pid": std::process::id() }));
         Ok(s)
@@ -73,6 +87,12 @@ impl Supervisor {
 
     pub fn running(&self) -> Vec<String> {
         self.runs.keys().cloned().collect()
+    }
+
+    /// The terminal agents' live terminals, for the GUI to draw.
+    #[cfg(feature = "terminal")]
+    pub fn terminals(&self) -> crate::term_run::Registry {
+        self.registry.clone()
     }
 
     /// One pass. Returns human-readable notes on what changed.
@@ -116,6 +136,10 @@ impl Supervisor {
                 self.on_exit(&name, ok, &mut notes);
             }
         }
+        #[cfg(feature = "terminal")]
+        for name in self.terms.keys().cloned().collect::<Vec<_>>() {
+            self.close_terminal(&name);
+        }
         let _ = std::fs::remove_file(heartbeat_path(&self.ws));
         self.ws.log("supervisor_stop", serde_json::json!({}));
     }
@@ -124,6 +148,18 @@ impl Supervisor {
         let cfg = AgentConfig::load(&self.ws, name)?;
         let dir = self.ws.agent_dir(name);
         let mut st = AgentState::load(&self.ws, name);
+
+        if cfg.terminal {
+            #[cfg(feature = "terminal")]
+            return self.step_terminal(name, &cfg, &mut st, paused, notes);
+            #[cfg(not(feature = "terminal"))]
+            {
+                if self.warned.insert(format!("terminal:{name}")) {
+                    notes.push(format!("{name} runs in a terminal; open desk-gui to run it"));
+                }
+                return Ok(());
+            }
+        }
 
         if !cfg.active {
             if self.runs.contains_key(name) {
@@ -401,7 +437,7 @@ impl Drop for Supervisor {
 
 /// What an agent gets in one run. Interrupts go first. An orchestrator gets
 /// one task's mail per turn, so it never juggles unrelated work.
-fn pick_batch(cfg: &AgentConfig, mut unread: Vec<Message>) -> (Vec<Message>, Option<String>) {
+pub(crate) fn pick_batch(cfg: &AgentConfig, mut unread: Vec<Message>) -> (Vec<Message>, Option<String>) {
     unread.sort_by_key(|m| m.kind != Kind::Interrupt); // stable: oldest first otherwise
     // A raw message is a run of its own, in order: the CLI gets its text verbatim.
     match unread.iter().position(|m| m.kind == Kind::Raw) {
@@ -447,6 +483,19 @@ fn agent_command(
         .env("PWD", &cfg.dir)
         .env("PATH", path_with_desk()?);
     Ok(cmd)
+}
+
+/// The environment desk gives an agent's CLI, as plain pairs (an empty
+/// value clears a variable), for terminals.
+pub(crate) fn agent_env(
+    ws: &Workspace,
+    name: &str,
+    cfg: &AgentConfig,
+    preset: &Preset,
+) -> Result<Vec<(String, String)>> {
+    let cmd = agent_command(ws, name, cfg, preset, None, false)?;
+    let text = |s: &std::ffi::OsStr| s.to_string_lossy().into_owned();
+    Ok(cmd.get_envs().map(|(k, v)| (text(k), v.map(text).unwrap_or_default())).collect())
 }
 
 /// What desk runs for an agent, spelled out so a human can run it by hand.
@@ -601,7 +650,7 @@ fn hide_window(cmd: &mut std::process::Command) {
 }
 
 /// Agent CLIs start their own children (shells, servers); take them all down.
-fn kill_tree(pid: u32) {
+pub(crate) fn kill_tree(pid: u32) {
     let mut cmd = if cfg!(windows) {
         let mut c = std::process::Command::new("taskkill");
         c.args(["/T", "/F", "/PID", &pid.to_string()]);
@@ -686,6 +735,7 @@ mod tests {
             role: "worker".into(),
             permissions: "bypass".into(),
             active: true,
+            terminal: false,
         };
         let names = |b: (Vec<Message>, Option<String>)| b.0.into_iter().map(|m| m.body).collect::<Vec<_>>();
         let unread = vec![msg("1", Kind::Note), msg("2", Kind::Raw), msg("3", Kind::Note)];

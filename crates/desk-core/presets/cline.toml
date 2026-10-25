@@ -7,4 +7,4 @@ args = ["Read {prompt_file} and do what it says."]
 model_args = ["--model", "{model}"]
 session = "none"
 output = "text"
-interactive = ["cline", "--tui"]
+interactive = ["cline", "--tui", "--model", "{model}"]

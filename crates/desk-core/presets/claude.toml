@@ -9,6 +9,8 @@ resume = ["--resume", "{session}"]
 output = "claude"
 interactive = ["claude", "--model", "{model}"]
 models = ["sonnet", "opus", "haiku"]
+# Shown under the input box only when Claude Code is waiting for a message.
+ready = "? for shortcuts"
 
 # Use your claude.ai login, not an API key that happens to be set.
 # Delete this line (in a copy under the workspace's presets/) to bill the key instead.

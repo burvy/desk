@@ -23,6 +23,10 @@ pub struct AgentConfig {
     /// false after `desk kill`. The agent keeps its memory and can be respawned.
     #[serde(default = "yes")]
     pub active: bool,
+    /// Run the CLI interactively in a terminal (inside desk-gui) instead of
+    /// headless. desk types its messages in.
+    #[serde(default)]
+    pub terminal: bool,
 }
 
 fn bypass() -> String {

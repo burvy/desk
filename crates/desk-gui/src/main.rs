@@ -10,6 +10,7 @@ mod app;
 mod clis;
 mod home;
 mod snapshot;
+mod term_view;
 
 use desk_core::Workspace;
 use desk_core::supervisor::{self, Supervisor};
@@ -40,6 +41,8 @@ fn main() -> eframe::Result {
         options,
         Box::new(move |cc| {
             symbol_fallback(&cc.egui_ctx);
+            let ctx = cc.egui_ctx.clone();
+            desk_core::terminal::on_output(move || ctx.request_repaint());
             let mut root = Root { home: home::Home::default(), open: None };
             if let Some(ws) = ws {
                 root.open(&cc.egui_ctx, ws);
@@ -133,6 +136,8 @@ pub struct Embedded {
     stop: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
     pub notes: Arc<Mutex<Vec<String>>>,
+    /// Terminal agents' live terminals.
+    pub terminals: desk_core::Registry,
 }
 
 impl Embedded {
@@ -142,6 +147,7 @@ impl Embedded {
             return None;
         }
         let mut sup = Supervisor::start(ws.clone()).ok()?;
+        let terminals = sup.terminals();
         let stop = Arc::new(AtomicBool::new(false));
         let notes = Arc::new(Mutex::new(Vec::new()));
         let (s, n) = (stop.clone(), notes.clone());
@@ -159,7 +165,7 @@ impl Embedded {
             }
             sup.shutdown();
         });
-        Some(Embedded { stop, thread: Some(thread), notes })
+        Some(Embedded { stop, thread: Some(thread), notes, terminals })
     }
 }
 

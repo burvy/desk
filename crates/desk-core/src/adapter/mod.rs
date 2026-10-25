@@ -54,10 +54,19 @@ pub struct Preset {
     pub resume: Vec<String>,
     /// How to read stdout: `claude` or `opencode` (their JSON streams), or `text`.
     pub output: String,
-    /// The command for take-over; `bypass` and `resume` are added as for a run.
+    /// The interactive command, for take-over and terminal agents; `bypass`,
+    /// `system` and (for take-over) `resume` are added as for a run.
     pub interactive: Vec<String>,
+    /// Keys that stop a terminal agent's current turn. Default: Escape.
+    pub interrupt: Option<String>,
+    /// Text a terminal agent's screen shows only when its CLI is waiting for
+    /// a message (not in a startup or permission dialog). desk types only then.
+    pub ready: Option<String>,
     /// Environment for the CLI. An empty value removes the variable.
     pub env: BTreeMap<String, String>,
+    /// Environment set only when the agent sets a model (placeholders filled),
+    /// for CLIs whose interactive mode has no model flag.
+    pub model_env: BTreeMap<String, String>,
     /// Model suggestions for the GUI.
     pub models: Vec<String>,
 }
@@ -146,6 +155,11 @@ impl Preset {
                 c.env(k, v);
             }
         }
+        if !run.cfg.model.is_empty() {
+            for (k, v) in &self.model_env {
+                c.env(k, self.fill(v, run));
+            }
+        }
         c.current_dir(&run.cfg.dir);
         c
     }
@@ -181,8 +195,24 @@ impl Preset {
         if session.is_some() {
             v.extend(self.resume.iter().cloned());
         }
+        let v = drop_empty(&v, &cfg.model, session);
         let session = session.unwrap_or("");
         Ok(v.into_iter().map(|a| a.replace("{model}", &cfg.model).replace("{session}", session)).collect())
+    }
+
+    /// The interactive command for a terminal agent: a fresh session each time
+    /// it starts, with the role prompt as a system prompt where the CLI takes one.
+    pub fn terminal_command(&self, run: &RunSpec) -> Result<(PathBuf, Vec<String>)> {
+        let Some((program, rest)) = self.interactive.split_first() else {
+            bail!("preset `{}` has no interactive command", self.name);
+        };
+        let mut args = drop_empty(rest, &run.cfg.model, run.session);
+        args = args.iter().map(|a| self.fill(a, run)).collect();
+        if run.cfg.permissions == "bypass" {
+            args.extend(self.bypass.iter().map(|a| self.fill(a, run)));
+        }
+        args.extend(self.system.iter().map(|a| self.fill(a, run)));
+        Ok((which(program).unwrap_or_else(|| PathBuf::from(program)), args))
     }
 
     /// One line of stdout → what happened.
@@ -266,6 +296,22 @@ pub fn remove(ws: &Workspace, name: &str) -> Result<()> {
     std::fs::remove_file(preset_file(ws, name))?;
     ws.log("preset_removed", serde_json::json!({ "preset": name }));
     Ok(())
+}
+
+/// In `interactive`, an option whose value is `{model}` or `{session}` is
+/// left out when that's empty, so the CLI uses its own default.
+fn drop_empty(args: &[String], model: &str, session: Option<&str>) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for a in args {
+        if (a == "{model}" && model.is_empty()) || (a == "{session}" && session.is_none()) {
+            if out.last().is_some_and(|p| p.starts_with('-')) {
+                out.pop();
+            }
+            continue;
+        }
+        out.push(a.clone());
+    }
+    out
 }
 
 /// Every preset: built-in, plus the workspace's own.
@@ -360,6 +406,7 @@ mod tests {
             role: "worker".into(),
             permissions: "bypass".into(),
             active: true,
+            terminal: false,
         };
         let spec = RunSpec {
             cfg: &cfg,

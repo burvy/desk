@@ -14,6 +14,7 @@ pub struct AgentForm {
     dir: String,
     role: String,
     bypass: bool,
+    terminal: bool,
     active: bool,
     presets: Vec<Preset>,
     /// Presets whose program is on PATH, checked once when the form opens.
@@ -34,12 +35,14 @@ impl AgentForm {
             dir: ws.config.projects.values().next().map(|p| p.display().to_string()).unwrap_or_default(),
             role: if has_orchestrator { "worker" } else { "orchestrator" }.into(),
             bypass: true,
+            terminal: false,
             active: true,
             presets,
             installed,
             error: None,
         };
         f.model = f.preset().and_then(|p| p.models.first().cloned()).unwrap_or_default();
+        f.terminal = f.prefers_terminal();
         f
     }
 
@@ -53,6 +56,7 @@ impl AgentForm {
             dir: cfg.dir.display().to_string(),
             role: cfg.role.clone(),
             bypass: cfg.permissions == "bypass",
+            terminal: cfg.terminal,
             active: cfg.active,
             presets,
             installed,
@@ -62,6 +66,11 @@ impl AgentForm {
 
     fn installed(&self, name: &str) -> bool {
         self.installed.iter().any(|n| n == name)
+    }
+
+    /// CLIs desk can't read a stream from run better in a terminal.
+    fn prefers_terminal(&self) -> bool {
+        self.preset().is_some_and(|p| p.output == "text")
     }
 
     fn preset(&self) -> Option<&Preset> {
@@ -118,6 +127,9 @@ impl AgentForm {
             });
             if self.cli != before {
                 self.model = self.preset().and_then(|p| p.models.first().cloned()).unwrap_or_default();
+                if !self.editing {
+                    self.terminal = self.prefers_terminal();
+                }
             }
             ui.end_row();
 
@@ -179,6 +191,15 @@ impl AgentForm {
             });
             ui.end_row();
 
+            ui.label("Runs");
+            ui.vertical(|ui| {
+                ui.radio_value(&mut self.terminal, true, "In a terminal, in this window")
+                    .on_hover_text("Its CLI's own interface, live. desk types messages in; you can type too.");
+                ui.radio_value(&mut self.terminal, false, "Headless")
+                    .on_hover_text("One command per turn, with a parsed transcript (Claude, OpenCode). Works with `desk run`.");
+            });
+            ui.end_row();
+
             ui.label("Permissions");
             ui.checkbox(&mut self.bypass, "Full: no permission prompts").on_hover_text(
                 "Headless runs can't answer prompts. Without this, tools that need approval fail.",
@@ -215,6 +236,7 @@ impl AgentForm {
             role: self.role.clone(),
             permissions: if self.bypass { "bypass" } else { "default" }.into(),
             active: self.active,
+            terminal: self.terminal,
         };
         agent::spawn(ws, name, cfg)?;
         Ok(if self.editing {

@@ -249,6 +249,7 @@ The prompt goes to stdin unless `args` mention `{prompt_file}`. The only CLI-spe
 - Bottom: message any agent (note, interrupt or raw).
 - CLIs: edit each preset's TOML, add your own, revert edits.
 - Terminal: a real terminal in the agent's project with desk's environment and its next command printed.
+- Terminal agents: the CLI's own interface, live in the agent view, inside the window. desk types messages in when the screen is quiet and the CLI is at its prompt (the preset's `ready` text). You can click in and type at any time.
 - Pause-all, and take-over: holds the agent's mail and opens its session in a real terminal (`desk take-over` / `hand-back` from the CLI). Later: an embedded `egui_term` pane instead.
 
 ## Roadmap

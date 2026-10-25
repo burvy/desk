@@ -6,5 +6,11 @@ bypass = ["--auto"]
 session = "stream"
 resume = ["--session", "{session}"]
 output = "opencode"
-interactive = ["opencode"]
+# --standalone: its own server, so the model_env below reaches it (the shared
+# background service never sees desk's environment).
+interactive = ["opencode", "--standalone"]
 models = ["opencode/glm-5.3-flash-free"]
+# Shown in the footer when OpenCode is waiting for a message.
+ready = "ctrl+p commands"
+# The TUI has no --model flag, so terminal agents get their model as inline config.
+model_env = { OPENCODE_CONFIG_CONTENT = '{"model": "{model}"}' }

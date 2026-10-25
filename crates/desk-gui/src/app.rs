@@ -56,6 +56,8 @@ pub struct App {
     flash: Option<(String, bool, Instant)>,
     form: Option<AgentForm>,
     clis: CliEditor,
+    /// For terminal agents: the desk log instead of the live terminal.
+    show_log: bool,
     /// Set by "Workspaces"; the window goes back to the start screen.
     pub close_requested: bool,
 }
@@ -81,6 +83,7 @@ impl App {
             flash: None,
             form: None,
             clis: CliEditor::default(),
+            show_log: false,
             close_requested: false,
         }
     }
@@ -385,21 +388,58 @@ impl App {
             ui.label(RichText::new(&status).color(status_color(&status)));
             ui.label(RichText::new(format!("{} · {}/{}", cfg.role, cfg.cli, cfg.model)).weak());
         });
-        ui.label(
-            RichText::new(format!(
+        let detail = if cfg.terminal {
+            format!("{} · runs in a terminal", cfg.dir.display())
+        } else {
+            format!(
                 "{} · {}k tokens in context · session {}",
                 cfg.dir.display(),
                 a.state.context_tokens / 1000,
                 a.state.session.as_deref().unwrap_or("none")
-            ))
-            .weak()
-            .small(),
-        );
+            )
+        };
+        ui.label(RichText::new(detail).weak().small());
+        if status == "waiting" {
+            ui.label(
+                RichText::new(
+                    "Its CLI is asking something, so desk isn't typing. Answer it in the terminal.",
+                )
+                .color(YELLOW),
+            );
+        }
         if let Some(e) = &a.state.last_error {
             ui.label(RichText::new(format!("last error: {e}")).color(RED));
         }
         ui.horizontal(|ui| self.agent_buttons(ui, name, &cfg, held, &status));
+        if cfg.terminal {
+            ui.horizontal(|ui| {
+                ui.selectable_value(&mut self.show_log, false, "Terminal");
+                ui.selectable_value(&mut self.show_log, true, "Log")
+                    .on_hover_text("What desk typed in, and the screen after each turn");
+            });
+        }
         ui.separator();
+        if cfg.terminal && !self.show_log {
+            let term = self.embedded.as_ref().and_then(|e| e.terminals.lock().unwrap().get(name).cloned());
+            match term {
+                Some(t) => crate::term_view::show(ui, &t),
+                None if self.embedded.is_none() => {
+                    ui.label(
+                        RichText::new(
+                            "Terminal agents run inside the window that supervises. A supervisor is running                              elsewhere (`desk run`), which can't host terminals: stop it, then press Start.",
+                        )
+                        .color(YELLOW),
+                    );
+                }
+                None if !cfg.active => {
+                    ui.label(RichText::new("Inactive. Reactivate to start its terminal.").weak());
+                }
+                None => {
+                    ui.label(RichText::new("Starting its terminal…").weak());
+                }
+            }
+            return;
+        }
 
         let short = Shortener::new(&cfg.dir, &self.ws.root);
         egui::ScrollArea::vertical().id_salt("transcript").stick_to_bottom(true).auto_shrink(false).show(
@@ -423,6 +463,16 @@ impl App {
                 let r = agent::hand_back(&self.ws, name).map(|_| format!("{name} is back with desk"));
                 self.report(r);
             }
+        } else if cfg.terminal {
+            if ui
+                .button("Take over")
+                .on_hover_text("desk stops typing into it; type in its terminal yourself")
+                .clicked()
+            {
+                let r =
+                    agent::take_over(&self.ws, name).map(|_| format!("{name}'s mail is held; it's yours"));
+                self.report(r);
+            }
         } else if ui
             .button("Take over")
             .on_hover_text("Hold its mail and open its session in a terminal")
@@ -431,10 +481,11 @@ impl App {
             let r = agent::take_over(&self.ws, name).and_then(|cmd| open_terminal(ui.ctx(), &cfg.dir, &cmd));
             self.report(r);
         }
-        if ui
-            .button("Terminal")
-            .on_hover_text("A terminal in its project with desk's setup, showing the command desk runs")
-            .clicked()
+        if !cfg.terminal
+            && ui
+                .button("Terminal")
+                .on_hover_text("A terminal in its project with desk's setup, showing the command desk runs")
+                .clicked()
         {
             let r = self.agent_terminal(ui.ctx(), name, cfg);
             self.report(r);
@@ -640,7 +691,7 @@ fn status_color(status: &str) -> Color32 {
     match status {
         "running" | "working" => GREEN,
         "error" | "blocked" => RED,
-        "held" | "review" => YELLOW,
+        "held" | "review" | "waiting" => YELLOW,
         "assigned" | "open" => BLUE,
         _ => Color32::GRAY,
     }

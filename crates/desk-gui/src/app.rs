@@ -2,8 +2,9 @@
 //! Right: the task board. Top: asks. Bottom: send a message.
 
 use crate::Embedded;
+use crate::agent_form::AgentForm;
 use crate::snapshot::{AgentRow, Snapshot};
-use desk_core::adapter::{self, Event};
+use desk_core::adapter::{self, Event, Preset};
 use desk_core::agent::{self, AgentConfig};
 use desk_core::message::{self, Kind};
 use desk_core::task::{self, Task};
@@ -29,6 +30,7 @@ struct Compose {
     to: String,
     task: Option<String>,
     interrupt: bool,
+    raw: bool,
     text: String,
 }
 
@@ -50,6 +52,9 @@ pub struct App {
     compose: Compose,
     answers: HashMap<String, String>,
     flash: Option<(String, bool, Instant)>,
+    form: Option<AgentForm>,
+    /// Set by "Workspaces"; the window goes back to the start screen.
+    pub close_requested: bool,
 }
 
 impl App {
@@ -71,6 +76,8 @@ impl App {
             compose,
             answers: HashMap::new(),
             flash: None,
+            form: None,
+            close_requested: false,
         }
     }
 
@@ -93,7 +100,7 @@ impl App {
 
     fn load_transcript(&mut self, name: &str) {
         let Some(row) = self.snap.agent(name) else { return };
-        let Some(adapter) = adapter::for_cli(&row.cfg.cli) else { return };
+        let Ok(preset) = Preset::load(&self.ws, &row.cfg.cli) else { return };
         let Some(path) = transcript::latest(&self.ws, name) else {
             self.transcript = TranscriptCache::default();
             return;
@@ -101,7 +108,7 @@ impl App {
         let len = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
         let key = Some((path.clone(), len));
         if self.transcript.key != key {
-            self.transcript = TranscriptCache { key, entries: transcript::entries(adapter, &path) };
+            self.transcript = TranscriptCache { key, entries: transcript::entries(&preset, &path) };
         }
     }
 
@@ -117,6 +124,13 @@ impl App {
     fn top_bar(&mut self, ui: &mut Ui) {
         ui.horizontal(|ui| {
             ui.heading("desk");
+            if ui
+                .small_button("Workspaces")
+                .on_hover_text("Back to the start screen; stops agents this window runs")
+                .clicked()
+            {
+                self.close_requested = true;
+            }
             ui.separator();
             if self.embedded.is_some() {
                 ui.label(RichText::new("● supervising").color(GREEN));
@@ -220,7 +234,11 @@ impl App {
             self.refresh(true);
         }
         if self.snap.agents.is_empty() {
-            ui.label(RichText::new("No agents yet. `desk spawn` one.").weak());
+            ui.label(RichText::new("No agents yet. Start with an orchestrator.").weak());
+        }
+        if ui.button("+ Add agent").clicked() {
+            let has_orchestrator = self.snap.agents.iter().any(|a| a.cfg.is_orchestrator());
+            self.form = Some(AgentForm::new_agent(&self.ws, has_orchestrator));
         }
         if !self.snap.locks.is_empty() {
             ui.separator();
@@ -305,6 +323,9 @@ impl App {
             });
             ui.checkbox(&mut self.compose.interrupt, "Interrupt")
                 .on_hover_text("Stop their current run and deliver this first");
+            ui.checkbox(&mut self.compose.raw, "Raw").on_hover_text(
+                "Send the text alone and verbatim, as its own run: for CLI commands like /compact",
+            );
         });
         ui.horizontal(|ui| {
             let field = ui.add(
@@ -316,7 +337,11 @@ impl App {
             let hotkey =
                 field.has_focus() && ui.input(|i| i.modifiers.command && i.key_pressed(egui::Key::Enter));
             if (ui.button("Send").clicked() || hotkey) && !self.compose.text.trim().is_empty() {
-                let kind = if self.compose.interrupt { Kind::Interrupt } else { Kind::Note };
+                let kind = match (self.compose.raw, self.compose.interrupt) {
+                    (true, _) => Kind::Raw,
+                    (_, true) => Kind::Interrupt,
+                    _ => Kind::Note,
+                };
                 let me = self.ws.config.human.clone();
                 let r = message::send(
                     &self.ws,
@@ -329,6 +354,7 @@ impl App {
                 if r.is_ok() {
                     self.compose.text.clear();
                     self.compose.interrupt = false;
+                    self.compose.raw = false;
                 }
                 let to = self.compose.to.clone();
                 self.report(r.map(|_| format!("sent to {to}")));
@@ -412,6 +438,9 @@ impl App {
             c.active = true;
             let r = agent::spawn(&self.ws, name, c).map(|_| format!("{name} is back"));
             self.report(r);
+        }
+        if ui.button("Settings").on_hover_text("CLI, model, project, role").clicked() {
+            self.form = Some(AgentForm::edit(&self.ws, name, cfg));
         }
         if ui.button("Memory").clicked() {
             let r = open_path(&self.ws.agent_dir(name).join("memory.md"));
@@ -533,8 +562,8 @@ impl App {
     }
 }
 
-impl eframe::App for App {
-    fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
+impl App {
+    pub fn ui(&mut self, ui: &mut Ui) {
         self.refresh(false);
         ui.ctx().request_repaint_after(Duration::from_millis(500));
 
@@ -551,12 +580,22 @@ impl eframe::App for App {
             View::Inbox => self.inbox_view(ui),
             View::Activity => self.activity_view(ui),
         });
+        if let Some(form) = &mut self.form {
+            let mut open = true;
+            let saved = form.show(ui.ctx(), &self.ws, &mut open);
+            if !open {
+                self.form = None;
+            }
+            if let Some(msg) = saved {
+                self.report(Ok(msg));
+            }
+        }
     }
 }
 
 const GREEN: Color32 = Color32::from_rgb(110, 190, 120);
-const RED: Color32 = Color32::from_rgb(225, 95, 90);
-const YELLOW: Color32 = Color32::from_rgb(220, 180, 80);
+pub const RED: Color32 = Color32::from_rgb(225, 95, 90);
+pub const YELLOW: Color32 = Color32::from_rgb(220, 180, 80);
 const BLUE: Color32 = Color32::from_rgb(120, 165, 230);
 
 fn status_color(status: &str) -> Color32 {
@@ -607,11 +646,17 @@ fn entry(ui: &mut Ui, i: usize, e: &Entry, short: &Shortener) {
     match e {
         Entry::Prompt { ts, text } => {
             ui.add_space(6.0);
-            let text = text.find("[desk]").map_or(text.as_str(), |i| &text[i..]);
-            let first = text
-                .lines()
-                .find(|l| l.starts_with("--- message"))
-                .map_or("prompt", |l| l.trim_matches(|c| c == '-' || c == ' '));
+            let (text, first) = match text.find("[desk]") {
+                Some(i) => {
+                    let first = text[i..]
+                        .lines()
+                        .find(|l| l.starts_with("--- message"))
+                        .map_or("prompt".to_string(), |l| l.trim_matches(|c| c == '-' || c == ' ').into());
+                    (&text[i..], first)
+                }
+                // No desk framing: a raw message, delivered verbatim.
+                None => (text.as_str(), format!("raw · {}", adapter::clip(text, 60))),
+            };
             egui::CollapsingHeader::new(
                 RichText::new(format!("→ {} · {first}", ts.get(11..19).unwrap_or(ts))).color(BLUE),
             )
@@ -708,7 +753,7 @@ fn open_terminal(ctx: &egui::Context, dir: &Path, cmd: &[String]) -> anyhow::Res
 fn open_path(path: &Path) -> anyhow::Result<String> {
     let mut c = if cfg!(windows) {
         let mut c = std::process::Command::new("cmd");
-        c.args(["/C", "start", ""]).arg(path);
+        crate::quiet(c.args(["/C", "start", ""]).arg(path));
         c
     } else if cfg!(target_os = "macos") {
         let mut c = std::process::Command::new("open");

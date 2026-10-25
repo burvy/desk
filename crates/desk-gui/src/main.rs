@@ -2,25 +2,34 @@
 //! CLI does and writes through desk-core, so it's only ever a view. If no
 //! supervisor is running, it runs one in a background thread.
 
+// A window, not a console program: no terminal pops up behind it.
+#![cfg_attr(windows, windows_subsystem = "windows")]
+
+mod agent_form;
 mod app;
+mod home;
 mod snapshot;
 
-use anyhow::Result;
 use desk_core::Workspace;
 use desk_core::supervisor::{self, Supervisor};
+use eframe::egui::{self, Ui};
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-fn main() -> Result<()> {
+fn main() -> eframe::Result {
+    // A path argument, else the workspace around the current folder, else the last one used.
     let ws = match std::env::args().nth(1) {
-        Some(p) => Workspace::open(std::path::Path::new(&p))?,
-        None => Workspace::find(&std::env::current_dir()?)?,
-    };
+        Some(p) => Workspace::open(Path::new(&p)).ok(),
+        None => Workspace::find(&std::env::current_dir().unwrap_or_default()).ok(),
+    }
+    .or_else(|| home::recent().iter().find_map(|p| Workspace::open(p).ok()));
     let options = eframe::NativeOptions {
-        viewport: eframe::egui::ViewportBuilder::default()
-            .with_title(format!("desk — {}", ws.root.display()))
+        viewport: egui::ViewportBuilder::default()
+            .with_title("desk")
+            .with_icon(icon())
             .with_inner_size([1100.0, 680.0])
             .with_min_inner_size([760.0, 480.0]),
         ..Default::default()
@@ -30,15 +39,47 @@ fn main() -> Result<()> {
         options,
         Box::new(move |cc| {
             symbol_fallback(&cc.egui_ctx);
-            Ok(Box::new(app::App::new(ws)))
+            let mut root = Root { home: home::Home::default(), open: None };
+            if let Some(ws) = ws {
+                root.open(&cc.egui_ctx, ws);
+            }
+            Ok(Box::new(root))
         }),
     )
-    .map_err(|e| anyhow::anyhow!("{e}"))
+}
+
+/// The start screen, or an open workspace.
+struct Root {
+    home: home::Home,
+    open: Option<app::App>,
+}
+
+impl Root {
+    fn open(&mut self, ctx: &egui::Context, ws: Workspace) {
+        home::remember(&ws.root);
+        ctx.send_viewport_cmd(egui::ViewportCommand::Title(format!("desk — {}", ws.root.display())));
+        self.open = Some(app::App::new(ws));
+    }
+}
+
+impl eframe::App for Root {
+    fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
+        if let Some(app) = &mut self.open {
+            app.ui(ui);
+            if app.close_requested {
+                self.open = None; // drops its supervisor, which stops the agents
+                self.home = home::Home::default();
+                ui.ctx().send_viewport_cmd(egui::ViewportCommand::Title("desk".into()));
+            }
+        } else if let Some(ws) = self.home.ui(ui) {
+            self.open(&ui.ctx().clone(), ws);
+        }
+    }
 }
 
 /// egui's bundled fonts lack symbols like ● ⚙ →; borrow the system's symbol font.
-fn symbol_fallback(ctx: &eframe::egui::Context) {
-    use eframe::egui::{FontData, FontFamily, FontInsert, FontPriority, InsertFontFamily};
+fn symbol_fallback(ctx: &egui::Context) {
+    use egui::{FontData, FontFamily, FontInsert, FontPriority, InsertFontFamily};
     let candidates = [
         "C:/Windows/Fonts/seguisym.ttf",
         "/System/Library/Fonts/Apple Symbols.ttf",
@@ -52,6 +93,38 @@ fn symbol_fallback(ctx: &eframe::egui::Context) {
         data: FontData::from_owned(bytes),
         families: families.into(),
     });
+}
+
+/// The window icon, drawn here rather than shipped as an image: a desk
+/// (a top and two legs) on a blue tile.
+fn icon() -> egui::IconData {
+    const N: usize = 64;
+    let mut rgba = vec![0u8; N * N * 4];
+    for y in 0..N {
+        for x in 0..N {
+            let (cx, cy) = ((x as i32 - 31).abs(), (y as i32 - 31).abs());
+            // A rounded square: outside the corners' circles stays transparent.
+            let (dx, dy) = ((cx - 20).max(0), (cy - 20).max(0));
+            if dx * dx + dy * dy > 11 * 11 {
+                continue;
+            }
+            let top = (22..30).contains(&y) && (12..52).contains(&x);
+            let leg = (30..46).contains(&y) && ((16..22).contains(&x) || (42..48).contains(&x));
+            let px = if top || leg { [245, 245, 240, 255] } else { [70, 115, 200, 255] };
+            rgba[(y * N + x) * 4..][..4].copy_from_slice(&px);
+        }
+    }
+    egui::IconData { rgba, width: N as u32, height: N as u32 }
+}
+
+/// Runs a command without flashing a console window (we're a window app).
+pub fn quiet(cmd: &mut std::process::Command) -> &mut std::process::Command {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    cmd
 }
 
 /// The supervisor, when this window owns it. Dropping it stops the agents.

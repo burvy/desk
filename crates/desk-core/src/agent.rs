@@ -134,6 +134,27 @@ pub fn request_reset(ws: &Workspace, name: &str) -> Result<()> {
     Ok(())
 }
 
+/// Take-over: holds delivery so a human can drive the session in a terminal.
+/// Returns the command line that opens the session interactively.
+pub fn take_over(ws: &Workspace, name: &str) -> Result<Vec<String>> {
+    let cfg = AgentConfig::load(ws, name)?;
+    fsutil::write_atomic(&ws.agent_dir(name).join("HELD"), "")?;
+    ws.log("take_over", serde_json::json!({ "agent": name }));
+    let adapter = crate::adapter::for_cli(&cfg.cli).context("unknown cli")?;
+    Ok(adapter.interactive(&cfg, AgentState::load(ws, name).session.as_deref()))
+}
+
+/// Ends a take-over; mail that arrived meanwhile is delivered.
+pub fn hand_back(ws: &Workspace, name: &str) -> Result<()> {
+    let _ = std::fs::remove_file(ws.agent_dir(name).join("HELD"));
+    ws.log("hand_back", serde_json::json!({ "agent": name }));
+    Ok(())
+}
+
+pub fn is_held(ws: &Workspace, name: &str) -> bool {
+    ws.agent_dir(name).join("HELD").exists()
+}
+
 /// Asks the supervisor to retry an agent that stopped after repeated failures.
 pub fn request_retry(ws: &Workspace, name: &str) -> Result<()> {
     AgentConfig::load(ws, name)?;

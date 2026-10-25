@@ -1,6 +1,7 @@
 //! OpenCode: `opencode run --format json`. Serves many providers (GLM, free models...).
 
 use super::{Adapter, Event, RunSpec, clip, program, summarize};
+use crate::agent::AgentConfig;
 use serde_json::Value;
 use std::process::Command;
 
@@ -22,6 +23,17 @@ impl Adapter for OpenCode {
 
     fn system_prompt(&self) -> bool {
         false
+    }
+
+    fn interactive(&self, cfg: &AgentConfig, session: Option<&str>) -> Vec<String> {
+        let mut v = vec!["opencode".to_string()];
+        if cfg.permissions == "bypass" {
+            v.push("--auto".into());
+        }
+        if let Some(s) = session {
+            v.extend(["--session".into(), s.into()]);
+        }
+        v
     }
 
     fn parse(&self, line: &str) -> Vec<Event> {

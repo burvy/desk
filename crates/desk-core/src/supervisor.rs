@@ -141,7 +141,9 @@ impl Supervisor {
             let interrupted = message::unread(&self.ws, name)
                 .iter()
                 .any(|m| m.kind == Kind::Interrupt && !run.delivered.contains(&m.path));
-            if interrupted && run.stopping.is_none() && !run.handoff {
+            if agent::is_held(&self.ws, name) {
+                self.stop(name, "taken over", notes); // two writers on one session would corrupt it
+            } else if interrupted && run.stopping.is_none() && !run.handoff {
                 self.stop(name, "interrupted", notes);
             }
             return Ok(());
@@ -159,7 +161,7 @@ impl Supervisor {
             st.state = "idle".into(); // respawned
             st.save(&self.ws, name)?;
         }
-        if paused || st.state == "error" {
+        if paused || st.state == "error" || agent::is_held(&self.ws, name) {
             return Ok(());
         }
         if self.retry_at.get(name).is_some_and(|t| Instant::now() < *t) {

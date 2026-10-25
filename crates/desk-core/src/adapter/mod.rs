@@ -44,6 +44,8 @@ pub trait Adapter: Sync {
     fn system_prompt(&self) -> bool;
     /// One line of stdout → what happened.
     fn parse(&self, line: &str) -> Vec<Event>;
+    /// The program and args that open this session interactively, for take-over.
+    fn interactive(&self, cfg: &AgentConfig, session: Option<&str>) -> Vec<String>;
 }
 
 pub fn for_cli(cli: &str) -> Option<&'static dyn Adapter> {

@@ -1,6 +1,7 @@
 //! Claude Code: `claude -p --output-format stream-json`.
 
 use super::{Adapter, Event, RunSpec, clip, program, summarize};
+use crate::agent::AgentConfig;
 use serde_json::Value;
 use std::process::Command;
 
@@ -24,6 +25,17 @@ impl Adapter for Claude {
 
     fn system_prompt(&self) -> bool {
         true
+    }
+
+    fn interactive(&self, cfg: &AgentConfig, session: Option<&str>) -> Vec<String> {
+        let mut v = vec!["claude".to_string(), "--model".into(), cfg.model.clone()];
+        if cfg.permissions == "bypass" {
+            v.extend(["--permission-mode".into(), "bypassPermissions".into()]);
+        }
+        if let Some(s) = session {
+            v.extend(["--resume".into(), s.into()]);
+        }
+        v
     }
 
     fn parse(&self, line: &str) -> Vec<Event> {

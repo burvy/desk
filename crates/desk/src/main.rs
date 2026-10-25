@@ -95,6 +95,13 @@ enum Cmd {
     HandBack {
         name: String,
     },
+    /// Print the command desk runs for an agent, to run it by hand.
+    Command {
+        name: String,
+        /// Print a script that also sets desk's environment (.cmd on Windows, sh elsewhere).
+        #[arg(long)]
+        script: bool,
+    },
     /// Show the end of an agent's transcript.
     Peek {
         name: String,
@@ -280,6 +287,22 @@ Add or override one with presets/<name>.toml in the workspace."
         Cmd::Reset { name } => {
             agent::request_reset(&ws, &name)?;
             println!("{name} will write a handoff, then start fresh");
+        }
+        Cmd::Command { name, script } => {
+            let line = supervisor::command_line(&ws, &name)?;
+            if script {
+                print!("{}", line.script(&ws, &name)?);
+                return Ok(());
+            }
+            println!(
+                "in {}:
+  {}",
+                line.dir.display(),
+                line.display()
+            );
+            for (k, v) in &line.env {
+                println!("  with {k}={}", v.as_deref().unwrap_or("(removed)"));
+            }
         }
         Cmd::Peek { name, n } => peek(&ws, &name, n)?,
         Cmd::Status => status(&ws),

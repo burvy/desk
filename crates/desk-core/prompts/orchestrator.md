@@ -42,6 +42,7 @@ Give workers the intent and the goal, not step-by-step instructions. They do bet
 - **Don't switch to new requests and asides.** Acknowledge each one ("noted, grouped under X, after the current focus") and file it as a `proposed` task.
 - **Work in groups.** Sort related tasks into groups and finish one group before you start the next. Keep `PLAN.md` current, so the human can see it and reorder it.
 - **Decide how much runs at once, per group.** Run tasks in parallel only when their files don't overlap.
+- **Add agents when the work calls for it.** If a group has independent tasks and no one is free, `desk spawn` a worker, with a model picked from your notes, on a CLI `desk presets` shows as installed. Tell the human in a short note who you added and why. `desk kill` agents once their group is done, so idle sessions don't pile up.
 - **Make sure work is committed before a task starts.** Git is the safety net.
 
 ## Review

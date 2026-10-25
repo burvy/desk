@@ -15,7 +15,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const BUILTIN: [(&str, &str); 7] = [
+const BUILTIN: [(&str, &str); 8] = [
     ("claude", include_str!("../../presets/claude.toml")),
     ("opencode", include_str!("../../presets/opencode.toml")),
     ("codex", include_str!("../../presets/codex.toml")),
@@ -23,6 +23,7 @@ const BUILTIN: [(&str, &str); 7] = [
     ("qwen", include_str!("../../presets/qwen.toml")),
     ("goose", include_str!("../../presets/goose.toml")),
     ("cline", include_str!("../../presets/cline.toml")),
+    ("zcode", include_str!("../../presets/zcode.toml")),
 ];
 
 /// One preset. In `args`, `bypass`, `resume` and the rest, these are filled in:
@@ -113,7 +114,7 @@ impl Preset {
 
     /// The workspace's `presets/<name>.toml`, else the built-in one.
     pub fn load(ws: &Workspace, name: &str) -> Result<Self> {
-        let path = ws.root.join("presets").join(format!("{name}.toml"));
+        let path = preset_file(ws, name);
         if path.is_file() {
             return Self::parse(name, &std::fs::read_to_string(&path)?);
         }
@@ -200,6 +201,73 @@ impl Preset {
     }
 }
 
+/// What a new preset starts as.
+pub const TEMPLATE: &str = r#"# See presets/README.md for every field.
+description = "My CLI"
+program = "mycli"
+# The prompt goes to stdin. For a CLI that wants it as an argument, use
+# args = ["-p", "Read {prompt_file} and do what it says."]
+args = []
+model_args = ["--model", "{model}"]
+bypass = []
+session = "none"
+output = "text"
+interactive = ["mycli"]
+"#;
+
+/// Where a preset comes from.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Origin {
+    Builtin,
+    /// A workspace file replaces the built-in one.
+    Overridden,
+    /// Only in the workspace.
+    Custom,
+}
+
+pub fn origin(ws: &Workspace, name: &str) -> Origin {
+    match (preset_file(ws, name).is_file(), BUILTIN.iter().any(|(n, _)| *n == name)) {
+        (true, true) => Origin::Overridden,
+        (true, false) => Origin::Custom,
+        _ => Origin::Builtin,
+    }
+}
+
+fn preset_file(ws: &Workspace, name: &str) -> PathBuf {
+    ws.root.join("presets").join(format!("{name}.toml"))
+}
+
+/// The preset's TOML: the workspace's file, else the built-in one.
+pub fn source(ws: &Workspace, name: &str) -> Option<String> {
+    std::fs::read_to_string(preset_file(ws, name))
+        .ok()
+        .or_else(|| BUILTIN.iter().find(|(n, _)| *n == name).map(|(_, t)| t.to_string()))
+}
+
+/// The built-in text, for "revert".
+pub fn builtin(name: &str) -> Option<&'static str> {
+    BUILTIN.iter().find(|(n, _)| *n == name).map(|(_, t)| *t)
+}
+
+/// Checks and writes `presets/<name>.toml`. Agents pick it up on their next run.
+pub fn save(ws: &Workspace, name: &str, text: &str) -> Result<()> {
+    if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+        bail!("preset names are letters, digits, - and _");
+    }
+    Preset::parse(name, text)?;
+    std::fs::create_dir_all(ws.root.join("presets"))?;
+    crate::fsutil::write_atomic(&preset_file(ws, name), text)?;
+    ws.log("preset_saved", serde_json::json!({ "preset": name }));
+    Ok(())
+}
+
+/// Deletes the workspace's file: a built-in goes back to its default.
+pub fn remove(ws: &Workspace, name: &str) -> Result<()> {
+    std::fs::remove_file(preset_file(ws, name))?;
+    ws.log("preset_removed", serde_json::json!({ "preset": name }));
+    Ok(())
+}
+
 /// Every preset: built-in, plus the workspace's own.
 pub fn names(ws: &Workspace) -> Vec<String> {
     let mut v: Vec<String> = BUILTIN.iter().map(|(n, _)| n.to_string()).collect();
@@ -260,6 +328,26 @@ mod tests {
         for (name, text) in BUILTIN {
             Preset::parse(name, text).unwrap();
         }
+        Preset::parse("template", TEMPLATE).unwrap();
+    }
+
+    #[test]
+    fn save_override_revert() {
+        let dir = std::env::temp_dir().join(format!("desk-preset-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let ws = Workspace::init(&dir, "me").unwrap();
+        assert_eq!(origin(&ws, "opencode"), Origin::Builtin);
+        let yolo = builtin("opencode").unwrap().replace(r#"bypass = ["--auto"]"#, r#"bypass = ["--yolo"]"#);
+        save(&ws, "opencode", &yolo).unwrap();
+        assert_eq!(origin(&ws, "opencode"), Origin::Overridden);
+        assert_eq!(Preset::load(&ws, "opencode").unwrap().bypass, ["--yolo"]);
+        assert!(save(&ws, "opencode", "progrm = \"typo\"").is_err(), "unknown fields are refused");
+        remove(&ws, "opencode").unwrap();
+        assert_eq!(Preset::load(&ws, "opencode").unwrap().bypass, ["--auto"]);
+        save(&ws, "mine", TEMPLATE).unwrap();
+        assert_eq!(origin(&ws, "mine"), Origin::Custom);
+        assert!(names(&ws).contains(&"mine".to_string()));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

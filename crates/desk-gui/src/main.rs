@@ -7,6 +7,7 @@
 
 mod agent_form;
 mod app;
+mod clis;
 mod home;
 mod snapshot;
 

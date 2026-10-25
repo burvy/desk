@@ -71,3 +71,10 @@ Bugs found by running it, all fixed:
 - **Tested:** `/compact` sent raw to a Claude agent compacted its session (34,644 → 8,311 tokens), on the claude.ai login with no API-key error. The window reopened the last workspace with no console behind it, showed the start screen when there wasn't one, and stopped its supervisor on close.
 - **Bugs found:** OpenCode doesn't always send `step_start`, so desk sometimes lost the session id and started over. Git Bash rewrites `/compact` into a path.
 - **Not verified:** the codex, gemini, qwen, goose and cline presets never ran, because their providers might cost money. The Add agent form was never clicked, because clicking means taking over your mouse. OpenCode given `/compact` raw wrote a summary, but whether it actually compacted is unclear.
+
+## Then: editing CLIs, Terminal
+
+- `clis.rs` (GUI) edits a preset's TOML, through `adapter::save`, `remove`, `origin` and `source` in core.
+- `supervisor::command_line` builds an agent's next command with the same `agent_command` the supervisor uses, so what you see is what desk runs. `CommandLine::script` wraps it in a `.cmd` with desk's environment. Terminal writes that to `scratch/terminal.cmd` and opens it in Windows Terminal.
+- **Tested:** the script ran in `cmd`. It set the environment, put `desk` first on PATH, and the printed command replayed rook's last prompt and continued its session. Saving, overriding, reverting and typo rejection are unit-tested.
+- **Not clicked:** the CLIs view and the Terminal button (the same mouse reason as before). The zcode preset never ran.

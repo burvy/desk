@@ -3,13 +3,14 @@
 
 use crate::Embedded;
 use crate::agent_form::AgentForm;
+use crate::clis::CliEditor;
 use crate::snapshot::{AgentRow, Snapshot};
 use desk_core::adapter::{self, Event, Preset};
 use desk_core::agent::{self, AgentConfig};
 use desk_core::message::{self, Kind};
 use desk_core::task::{self, Task};
 use desk_core::transcript::{self, Entry};
-use desk_core::{Workspace, ask, fsutil};
+use desk_core::{Workspace, ask, fsutil, supervisor};
 use eframe::egui::{self, Color32, RichText, Ui};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -23,6 +24,7 @@ enum View {
     Task(String),
     Inbox,
     Activity,
+    Clis,
 }
 
 #[derive(Default)]
@@ -53,6 +55,7 @@ pub struct App {
     answers: HashMap<String, String>,
     flash: Option<(String, bool, Instant)>,
     form: Option<AgentForm>,
+    clis: CliEditor,
     /// Set by "Workspaces"; the window goes back to the start screen.
     pub close_requested: bool,
 }
@@ -77,6 +80,7 @@ impl App {
             answers: HashMap::new(),
             flash: None,
             form: None,
+            clis: CliEditor::default(),
             close_requested: false,
         }
     }
@@ -217,6 +221,13 @@ impl App {
         if ui.selectable_label(self.view == View::Activity, "Activity").clicked() {
             self.view = View::Activity;
             self.refresh(true);
+        }
+        if ui
+            .selectable_label(self.view == View::Clis, "CLIs")
+            .on_hover_text("Edit how each CLI is run")
+            .clicked()
+        {
+            self.view = View::Clis;
         }
         ui.separator();
         ui.label(RichText::new("AGENTS").weak().small());
@@ -420,6 +431,14 @@ impl App {
             let r = agent::take_over(&self.ws, name).and_then(|cmd| open_terminal(ui.ctx(), &cfg.dir, &cmd));
             self.report(r);
         }
+        if ui
+            .button("Terminal")
+            .on_hover_text("A terminal in its project with desk's setup, showing the command desk runs")
+            .clicked()
+        {
+            let r = self.agent_terminal(ui.ctx(), name, cfg);
+            self.report(r);
+        }
         if ui.button("Reset").on_hover_text("Write a handoff, then start a fresh session").clicked() {
             let r = agent::request_reset(&self.ws, name).map(|_| format!("{name} will hand off and reset"));
             self.report(r);
@@ -450,6 +469,20 @@ impl App {
             let r = open_path(&cfg.dir);
             self.report(r);
         }
+    }
+
+    /// Writes `scratch/terminal.cmd` (desk's environment plus the agent's
+    /// next command) and opens a terminal that runs it.
+    fn agent_terminal(&self, ctx: &egui::Context, name: &str, cfg: &AgentConfig) -> anyhow::Result<String> {
+        let line = supervisor::command_line(&self.ws, name)?;
+        if !cfg!(windows) {
+            ctx.copy_text(format!("cd {:?} && {}", cfg.dir, line.display()));
+            return Ok("the command is on your clipboard".into());
+        }
+        let script = self.ws.agent_dir(name).join("scratch/terminal.cmd");
+        fsutil::write_atomic(&script, &line.script(&self.ws, name)?)?;
+        open_terminal(ctx, &cfg.dir, &[script.display().to_string()])
+            .map(|_| format!("opened a terminal for {name}"))
     }
 
     fn task_view(&mut self, ui: &mut Ui, id: &str) {
@@ -579,6 +612,11 @@ impl App {
             View::Task(id) => self.task_view(ui, &id),
             View::Inbox => self.inbox_view(ui),
             View::Activity => self.activity_view(ui),
+            View::Clis => {
+                if let Some(msg) = self.clis.ui(ui, &self.ws) {
+                    self.report(Ok(msg));
+                }
+            }
         });
         if let Some(form) = &mut self.form {
             let mut open = true;

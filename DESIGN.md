@@ -214,6 +214,7 @@ desk presets                       the CLIs agents can use, and which are instal
 desk kill <name>
 desk reset <name>
 desk peek <name>
+desk command <name> [--script]     the command desk runs for it, to run by hand
 desk status
 desk task new | set <id> <field> <value>
 desk ask <msg> [--blocking] [--task N]
@@ -246,6 +247,8 @@ The prompt goes to stdin unless `args` mention `{prompt_file}`. The only CLI-spe
 - Right: the task board by status.
 - Top: the Asks panel. Blocking asks come first.
 - Bottom: message any agent (note, interrupt or raw).
+- CLIs: edit each preset's TOML, add your own, revert edits.
+- Terminal: a real terminal in the agent's project with desk's environment and its next command printed.
 - Pause-all, and take-over: holds the agent's mail and opens its session in a real terminal (`desk take-over` / `hand-back` from the CLI). Later: an embedded `egui_term` pane instead.
 
 ## Roadmap

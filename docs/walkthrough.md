@@ -1,0 +1,64 @@
+# Walkthrough
+
+How desk works, file by file, so you can own it. About 3,700 lines of Rust.
+
+## The one idea
+
+The supervisor owns every agent process. That's what your old setup couldn't do: a process can only type into a terminal it created. desk never types into terminals. Each agent turn is one headless run (`claude -p …` / `opencode run …`). The prompt goes to stdin and a JSON stream comes back. Between runs, the agent is just files.
+
+## Follow one message
+
+1. You run `desk send rook "fix the sand"`. **`message.rs` → `send`** writes `agents/rook/inbox/<timestamp>-you.md`: a `---` header (`from/to/task/kind`), then the body. It appends a `sent` event to `log/events.jsonl`.
+2. **`supervisor.rs` → `tick`** runs twice a second (from `desk run`, or a thread inside `desk-gui`). For each agent, `step` checks whether it's inactive, already running, held, paused, failing or being reset. If none of those apply and it has unread mail, it starts a run.
+3. `pick_batch` chooses the mail: interrupts first, then everything else. An orchestrator gets one task's mail per turn.
+4. **`prompt.rs` → `delivery`** writes the prompt: who you are, project vs workspace, the human's name, an at-least-once reminder, then the messages. OpenCode sessions also get the role prompt on top, because OpenCode has no system-prompt flag.
+5. `launch` builds the command through the **adapter** (`adapter/claude.rs`, `adapter/opencode.rs`). It sets `DESK_WORKSPACE`, `DESK_AGENT` and `PWD`, and puts the `desk` binary first on PATH. Then it spawns the process. A thread writes the prompt to stdin. Another thread reads stdout line by line: it writes each raw line to `log/transcripts/rook/<session>.jsonl` and sends the parsed `Event`s (session id, text, tool calls, token usage, errors) back to the supervisor.
+6. When the process exits, `on_exit` decides:
+   - **Clean:** the delivered messages move to `inbox/read/`.
+   - **Stopped on purpose** (interrupt, kill, pause, take-over): nothing moves, so the mail is redelivered.
+   - **Failed:** retry after 30s, then 60s, then stop and message you.
+7. Inside its run, rook calls `desk send mike …`, `desk task set 14 status review` and so on. The CLI (`crates/desk/src/main.rs`) is a thin layer over the same core functions.
+
+## The files
+
+| File | What it is |
+|---|---|
+| `frontmatter.rs` | The `---` header format. Line-based, so `set` keeps your comments and key order. |
+| `fsutil.rs` | Atomic writes (temp file + rename), `create_new`, a cross-process `FileLock`, ids, slugs. |
+| `workspace.rs` | Finds the workspace, reads `desk.toml`, knows every path, and writes `events.jsonl`. `init` lays out a new workspace. |
+| `agent.rs` | `agent.toml` (your config) vs `state.toml` (written only by the supervisor). Spawn, kill, reset, take-over. |
+| `message.rs` | Send, unread and mark-read, plus the budget breaker. |
+| `task.rs` | Tasks, `## sections`, `set` (the only header writer), and review verdicts feeding `models/`. |
+| `ask.rs` | Asks. A blocking ask blocks its task. Answering restores the status from before the block and messages the asker. |
+| `lock.rs` | `locks/<name>.toml`. Released on kill, reset, or repeated failure. |
+| `models.rs` | `models/<cli>-<model>.md`: notes plus an automatic track record. |
+| `prompt.rs` | Every sentence desk itself says to agents, in one place. |
+| `transcript.rs` | Reads transcripts back for `peek` and the GUI. |
+| `supervisor.rs` | The loop above. The only code that starts or stops processes. |
+| `adapter/*` | Everything CLI-specific. Adding a CLI means adding one file here. |
+| `prompts/*.md` | **Drafts** of the orchestrator and worker prompts. `desk init` copies them into each workspace's `prompts/`, where you can edit them. |
+| `desk-gui/*` | `snapshot.rs` reads the workspace about once a second. `app.rs` draws it, and every button calls the same core functions as the CLI. |
+
+## Tested tonight (free OpenCode models only)
+
+- **Full loop:** you → orchestrator → task → worker → review → done → track record → a note to you. The orchestrator also caught a real mistake: a file in the wrong folder.
+- **Mail handling:** interrupt mid-run (the run is killed and restarted with the interrupt first). The budget breaker blocks the task and raises an ask. A bad model fails 3 times, then stops and messages you.
+- **Lifecycle commands:** reset with handoff (memory.md and handoff.md written, new session), kill and respawn, `pause --now` and resume.
+- **GUI:** live transcript, task view, and a clean supervisor shutdown when the window closes.
+
+Bugs found by running it, all fixed:
+- Agents worked in the workspace instead of the project (OpenCode trusts an inherited `$PWD`).
+- `desk send` broke on messages containing `->`, and swallowed flags written after the message.
+- Model notes were split across two files.
+- Answering an ask always unblocked the task to `working`, even when it had been `open`.
+
+## Not verified
+
+- **Claude agents never completed a real run.** Your environment sets `ANTHROPIC_API_KEY` (the CLI said so), and that key has no credit, so Claude agents will fail with "Credit balance is too low". To use your subscription instead, unset `ANTHROPIC_API_KEY` in the shell that starts `desk run` / `desk-gui`. The adapter's flags are checked against `claude --help`, and the stream parser is tested against the real stream format.
+- The **Take over** button opens Windows Terminal (`wt`), falling back to `cmd`. I didn't click it, because it would pop up a real interactive session.
+
+## Where I'd push back or want your call
+
+- **The prompts are drafts.** They're the part that most shapes behavior. Read `crates/desk-core/prompts/*.md`.
+- **Full bypass** stays the default, as you chose. The real risk is an agent with full permissions reading untrusted content (web pages, downloads). `permissions = "default"` in one agent's `agent.toml` tightens just that agent.
+- **I used polling instead of `notify`** (see DECISIONS.md). That's a deliberate change from DESIGN.md.

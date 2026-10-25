@@ -4,7 +4,13 @@ A small, transparent harness for a team of coding agents. Agents message each ot
 
 ```
 cargo install --path crates/desk && cargo install --path crates/desk-gui
+```
 
+Open `desk-gui` (pin it to the taskbar). Make a workspace, add an orchestrator, and message it. Next time it opens straight to your last workspace.
+
+Or from a terminal:
+
+```
 desk init myteam --human you && cd myteam
 desk spawn mike --cli claude   --model sonnet                      --dir ~/code/game --role orchestrator
 desk spawn rook --cli opencode --model opencode/glm-5.3-flash-free --dir ~/code/game
@@ -14,9 +20,8 @@ desk status                                # agents, tasks, asks, locks
 desk peek rook                             # what rook is doing
 desk inbox                                 # what the agents told you
 desk answer 3 "falling block"              # answer an agent's question
-desk-gui                                   # or all of the above in a window
 ```
 
 Everything lives in the workspace folder. `cat` it, edit it, commit it. `DESIGN.md` explains how it works, and `DECISIONS.md` explains why.
 
-Supported CLIs: `claude` (Claude Code) and `opencode` (any provider OpenCode serves).
+CLIs: `desk presets` lists them (claude, opencode, codex, gemini, qwen, goose, cline). Add your own as `presets/<name>.toml` in the workspace.

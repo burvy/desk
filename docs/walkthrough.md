@@ -12,7 +12,7 @@ The supervisor owns every agent process. That's what your old setup couldn't do:
 2. **`supervisor.rs` → `tick`** runs twice a second (from `desk run`, or a thread inside `desk-gui`). For each agent, `step` checks whether it's inactive, already running, held, paused, failing or being reset. If none of those apply and it has unread mail, it starts a run.
 3. `pick_batch` chooses the mail: interrupts first, then everything else. An orchestrator gets one task's mail per turn.
 4. **`prompt.rs` → `delivery`** writes the prompt: who you are, project vs workspace, the human's name, an at-least-once reminder, then the messages. OpenCode sessions also get the role prompt on top, because OpenCode has no system-prompt flag.
-5. `launch` builds the command through the **adapter** (`adapter/claude.rs`, `adapter/opencode.rs`). It sets `DESK_WORKSPACE`, `DESK_AGENT` and `PWD`, and puts the `desk` binary first on PATH. Then it spawns the process. A thread writes the prompt to stdin. Another thread reads stdout line by line: it writes each raw line to `log/transcripts/rook/<session>.jsonl` and sends the parsed `Event`s (session id, text, tool calls, token usage, errors) back to the supervisor.
+5. `launch` builds the command from the agent's **preset** (`adapter/mod.rs` reads `presets/<cli>.toml`). It sets `DESK_WORKSPACE`, `DESK_AGENT` and `PWD`, and puts the `desk` binary first on PATH. Then it spawns the process. A thread writes the prompt to stdin. Another thread reads stdout line by line: it writes each raw line to `log/transcripts/rook/<session>.jsonl` and sends the parsed `Event`s (from `adapter/claude.rs` or `adapter/opencode.rs`, or plain text lines; session id, text, tool calls, token usage, errors) back to the supervisor.
 6. When the process exits, `on_exit` decides:
    - **Clean:** the delivered messages move to `inbox/read/`.
    - **Stopped on purpose** (interrupt, kill, pause, take-over): nothing moves, so the mail is redelivered.
@@ -35,9 +35,10 @@ The supervisor owns every agent process. That's what your old setup couldn't do:
 | `prompt.rs` | Every sentence desk itself says to agents, in one place. |
 | `transcript.rs` | Reads transcripts back for `peek` and the GUI. |
 | `supervisor.rs` | The loop above. The only code that starts or stops processes. |
-| `adapter/*` | Everything CLI-specific. Adding a CLI means adding one file here. |
+| `adapter/*` | `mod.rs`: presets, which turn an agent into a command line. `claude.rs`, `opencode.rs`: their JSON stream parsers. |
+| `presets/*.toml` | The built-in CLI presets. Adding a CLI usually means adding one of these, no Rust. |
 | `prompts/*.md` | **Drafts** of the orchestrator and worker prompts. `desk init` copies them into each workspace's `prompts/`, where you can edit them. |
-| `desk-gui/*` | `snapshot.rs` reads the workspace about once a second. `app.rs` draws it, and every button calls the same core functions as the CLI. |
+| `desk-gui/*` | `main.rs` picks the workspace at startup. `home.rs` is the start screen. `snapshot.rs` reads the workspace about once a second. `app.rs` draws it. `agent_form.rs` adds or edits an agent. Every button calls the same core functions as the CLI. |
 
 ## Tested tonight (free OpenCode models only)
 
@@ -62,3 +63,11 @@ Bugs found by running it, all fixed:
 - **The prompts are drafts.** They're the part that most shapes behavior. Read `crates/desk-core/prompts/*.md`.
 - **Full bypass** stays the default, as you chose. The real risk is an agent with full permissions reading untrusted content (web pages, downloads). `permissions = "default"` in one agent's `agent.toml` tightens just that agent.
 - **I used polling instead of `notify`** (see DECISIONS.md). That's a deliberate change from DESIGN.md.
+
+## Added the next day: presets, raw messages, the start screen
+
+- **Presets.** `agent.toml`'s `cli` names a preset. `Preset::command` fills the placeholders and adds `model_args`, `bypass`, `system` and `resume` as needed. Named sessions get their name in `launch`, before the first run.
+- **Raw messages.** `pick_batch` makes a raw message a run of its own. `step` sends its text without `prompt::delivery`'s framing.
+- **Tested:** `/compact` sent raw to a Claude agent compacted its session (34,644 → 8,311 tokens), on the claude.ai login with no API-key error. The window reopened the last workspace with no console behind it, showed the start screen when there wasn't one, and stopped its supervisor on close.
+- **Bugs found:** OpenCode doesn't always send `step_start`, so desk sometimes lost the session id and started over. Git Bash rewrites `/compact` into a path.
+- **Not verified:** the codex, gemini, qwen, goose and cline presets never ran, because their providers might cost money. The Add agent form was never clicked, because clicking means taking over your mouse. OpenCode given `/compact` raw wrote a summary, but whether it actually compacted is unclear.

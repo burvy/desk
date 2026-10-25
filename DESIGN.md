@@ -3,7 +3,7 @@
 A small, transparent harness for running a team of coding agents on one machine.
 The orchestrator plans and merges; workers implement; everything they do is plain files you can read.
 
-Status: v0 (core + CLI) works. v1 GUI (`desk-gui`) works: agents, transcripts, task board, asks, inbox, composer, take-over.
+Status: v0 (core + CLI) works. v1 GUI (`desk-gui`) works: start screen, agents (add and edit), transcripts, task board, asks, inbox, composer, take-over.
 
 ## Principles
 
@@ -22,7 +22,7 @@ Status: v0 (core + CLI) works. v1 GUI (`desk-gui`) works: agents, transcripts, t
 workspace folder            ← plain files, source of truth
       ▲
 desk core (Rust lib)        ← watches inboxes, delivers, spawns/kills, logs
-      │   └─ adapters: claude, opencode (GLM, free providers)
+      │   └─ CLI presets: claude, opencode, codex, gemini, qwen, goose, cline, yours
       ├─ desk CLI           ← what agents (and you) call
       └─ desk GUI (egui)    ← what you look at
 ```
@@ -53,6 +53,7 @@ workspace/
   locks/<name>.toml         shared-resource locks
   models/<model>.md         notes + track record per model
   prompts/                  orchestrator.md, worker.md (edit to taste)
+  presets/<cli>.toml        your own CLI presets, or overrides of built-in ones
   log/
     events.jsonl            everything the core did
     transcripts/<agent>/<session>.jsonl
@@ -68,7 +69,7 @@ The human is a participant named in `desk.toml` and has an inbox like any agent.
 from: michael
 to: rook
 task: 014          # optional
-kind: note         # note | interrupt
+kind: note         # note | interrupt | raw
 ---
 Review the diff on branch attack-rework. Focus on the tick-order change.
 ```
@@ -148,6 +149,7 @@ The orchestrator sets the pace, not the order ideas arrive in.
 - An idle agent with unread mail gets one run. All unread messages are combined into one prompt (the orchestrator's are split by task, see Pacing).
 - A message moves to `read/` only after the run exits cleanly. Delivery is at-least-once, so prompts say: "you may have seen some of this before; check memory first."
 - `interrupt` messages stop the current run and resume with the interrupt first. `note` messages wait for the next turn.
+- `raw` messages are a run of their own, and the CLI gets the text verbatim, with no desk framing. That's how to run a CLI's own commands, like `/compact` (Claude Code runs it headless).
 - While a human has taken over an agent, delivery to it pauses.
 
 ## Asks
@@ -206,8 +208,9 @@ The orchestrator also:
 ```
 desk init [path] [--human name]    create a workspace
 desk run                           the supervisor: delivers mail, runs agents
-desk send <to> [--task N] [--interrupt] <msg>
-desk spawn <name> --cli <c> --model <m> --dir <path> --role <file>
+desk send <to> [--task N] [--interrupt | --raw] <msg>
+desk spawn <name> --cli <preset> [--model m] --dir <path> --role <file>
+desk presets                       the CLIs agents can use, and which are installed
 desk kill <name>
 desk reset <name>
 desk peek <name>
@@ -220,25 +223,29 @@ desk lock | unlock <name>
 desk pause [--now] | resume [name] resume <name> retries a stopped agent
 ```
 
-## Adapters
+## CLI presets
 
-```rust
-trait Adapter {
-    fn command(&self, run: &RunSpec) -> std::process::Command; // the prompt goes to stdin
-    fn system_prompt(&self) -> bool;                           // if false, the role prompt is prepended
-    fn parse(&self, line: &str) -> Vec<Event>;                 // stream line → events
-}
+Each agent CLI is a preset: a small TOML file that names the command, how sessions continue, and how to read the output. Claude and OpenCode are presets like the rest. Built-in presets ship in the binary (`crates/desk-core/presets/`), and a workspace's `presets/<name>.toml` adds or overrides one. `presets/README.md` lists the fields.
+
+```toml
+program = "goose"
+args = ["run", "--instructions", "-", "--name", "{session}"]
+model_args = ["--model", "{model}"]
+session = "named"        # stream (id read from output) | named (desk names it) | none
+resume = ["--resume"]
+output = "text"          # claude | opencode (JSON streams desk parses) | text
 ```
 
-v0 ships `claude` (`-p --output-format stream-json --resume`) and `opencode` (`run --format json --session`).
+The prompt goes to stdin unless `args` mention `{prompt_file}`. The only CLI-specific Rust is the two stream parsers, which give desk tool calls, token counts and session ids. With `text` output, the transcript is the CLI's plain output. Claude and OpenCode are verified; the others are written from each CLI's `--help` and marked untested.
 
 ## GUI (egui)
 
-- Left: agents with state (idle, running, blocked, error) and model.
+- Opens the last workspace, or a start screen: recent workspaces, open one, create one.
+- Left: agents with state (idle, running, blocked, error) and model. Add an agent, or edit one's settings, in a form.
 - Center: the selected agent's live transcript, or the selected task.
 - Right: the task board by status.
 - Top: the Asks panel. Blocking asks come first.
-- Bottom: message any agent (note or interrupt).
+- Bottom: message any agent (note, interrupt or raw).
 - Pause-all, and take-over: holds the agent's mail and opens its session in a real terminal (`desk take-over` / `hand-back` from the CLI). Later: an embedded `egui_term` pane instead.
 
 ## Roadmap

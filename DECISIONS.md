@@ -22,3 +22,12 @@ One line per decision, with the reason. Newest last.
 - egui's bundled fonts lack symbols like ● ⚙ →, so the GUI falls back to the OS symbol font (Segoe UI Symbol on Windows).
 - Take-over v1 is a real terminal, not an embedded one. `HELD` stops delivery (and stops any current run, since two writers would corrupt one session), and the GUI opens `claude --resume` / `opencode --session` in Windows Terminal. The embedded `egui_term` pane stays on the roadmap.
 - `desk send` accepts messages with hyphens (`a -> b`), and flags written after the message still count as flags. Agents ran into both.
+- **Every CLI is a preset** (a TOML file: command, session handling, output format), and Claude and OpenCode are presets too. Adding a CLI needs no Rust unless it has a JSON stream worth parsing. Built-ins ship in the binary; `presets/<name>.toml` in a workspace overrides or adds one.
+- Presets with plain-text output can't report a session id. They use `named` sessions when the CLI lets desk pick the name (goose), or `none`, where every run is fresh and memory.md carries the agent.
+- A CLI that only takes its prompt as an argument (Cline) gets a one-line pointer to a prompt file instead. Long prompts as arguments break on Windows' command-line limit and `.cmd` quoting.
+- The Claude preset removes `ANTHROPIC_API_KEY` so agents use your claude.ai login. A key in the environment silently takes precedence over the login, and the key here had no credit. Override the preset to bill a key.
+- **Raw messages** (`desk send --raw`) go to the CLI alone and verbatim, as their own run. That lets the orchestrator (or you) run CLI commands like `/compact` without desk knowing about any of them. Claude Code runs `/compact` headless; that was checked. `desk reset` stays the portable way.
+- `desk send --raw` refuses text that Git Bash has turned into a path (`/compact` → `C:/Program Files/Git/compact`) and says to pipe it in. Agents shell out through Git Bash, so they'd hit this.
+- The OpenCode parser takes the session id from any event, not just `step_start`, which OpenCode doesn't always send. Missing it silently started a new session each run.
+- desk-gui is a window app (`windows_subsystem = "windows"`): no console behind it. It opens the last workspace, or a start screen to open or create one, so it can be pinned and launched like any app. The recent list is in `%APPDATA%\desk\recent.txt`.
+- Agents can be added and edited in the window (the same `agent::spawn` as `desk spawn`). Folder pickers use `rfd`, the one new dependency.

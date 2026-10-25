@@ -46,7 +46,7 @@ enum Cmd {
         /// Stop the recipient's current run and deliver this first.
         #[arg(long)]
         interrupt: bool,
-        #[arg(required = true, num_args = 1..)]
+        #[arg(required = true, num_args = 1.., allow_hyphen_values = true)]
         message: Vec<String>,
     },
     /// Show your unread messages and mark them read.
@@ -80,6 +80,14 @@ enum Cmd {
     Reset {
         name: String,
     },
+    /// Hold an agent's mail and print the command that opens its session for you.
+    TakeOver {
+        name: String,
+    },
+    /// End a take-over; held mail is delivered.
+    HandBack {
+        name: String,
+    },
     /// Show the end of an agent's transcript.
     Peek {
         name: String,
@@ -92,7 +100,7 @@ enum Cmd {
     Task(TaskCmd),
     /// Ask the human a question. `-` reads it from stdin.
     Ask {
-        #[arg(required = true, num_args = 1..)]
+        #[arg(required = true, num_args = 1.., allow_hyphen_values = true)]
         question: Vec<String>,
         /// Block the task until answered.
         #[arg(long)]
@@ -103,7 +111,7 @@ enum Cmd {
     /// Answer an ask. The asker gets the answer as a message.
     Answer {
         id: String,
-        #[arg(required = true, num_args = 1..)]
+        #[arg(required = true, num_args = 1.., allow_hyphen_values = true)]
         answer: Vec<String>,
     },
     /// Take a lock on a shared resource.
@@ -186,7 +194,9 @@ fn run(cli: Cli) -> Result<()> {
     match cli.cmd {
         Cmd::Init { .. } => unreachable!(),
         Cmd::Run => supervise(ws)?,
-        Cmd::Send { to, task, interrupt, message } => {
+        Cmd::Send { to, task, interrupt, mut message } => {
+            let task = task.or(take_value(&mut message, "--task"));
+            let interrupt = interrupt | take_flag(&mut message, "--interrupt");
             let kind = if interrupt { Kind::Interrupt } else { Kind::Note };
             let path = message::send(&ws, &me, &to, task.as_deref(), kind, &text(message)?)?;
             println!("sent to {to} ({})", path.display());
@@ -218,6 +228,16 @@ fn run(cli: Cli) -> Result<()> {
             agent::kill(&ws, &name)?;
             println!("{name} deactivated; `desk spawn` brings it back with its memory");
         }
+        Cmd::TakeOver { name } => {
+            let cmd = agent::take_over(&ws, &name)?;
+            let dir = AgentConfig::load(&ws, &name)?.dir;
+            println!("{name}'s mail is held. Its session, in {}:\n\n  {}\n", dir.display(), cmd.join(" "));
+            println!("`desk hand-back {name}` when you're done.");
+        }
+        Cmd::HandBack { name } => {
+            agent::hand_back(&ws, &name)?;
+            println!("{name} is back with desk");
+        }
         Cmd::Reset { name } => {
             agent::request_reset(&ws, &name)?;
             println!("{name} will write a handoff, then start fresh");
@@ -225,7 +245,9 @@ fn run(cli: Cli) -> Result<()> {
         Cmd::Peek { name, n } => peek(&ws, &name, n)?,
         Cmd::Status => status(&ws),
         Cmd::Task(t) => task_cmd(&ws, t)?,
-        Cmd::Ask { question, blocking, task } => {
+        Cmd::Ask { mut question, blocking, task } => {
+            let task = task.or(take_value(&mut question, "--task"));
+            let blocking = blocking | take_flag(&mut question, "--blocking");
             let a = ask::new(&ws, &me, task.as_deref(), blocking, &text(question)?)?;
             println!(
                 "ask {} raised{}",
@@ -264,6 +286,25 @@ fn run(cli: Cli) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Messages may contain hyphens (`a -> b`), so clap takes every word after
+/// the first as text. A flag given after the message arrives as its own
+/// word, though, so pull those back out rather than send them as text.
+fn take_flag(words: &mut Vec<String>, flag: &str) -> bool {
+    let before = words.len();
+    words.retain(|w| w != flag);
+    words.len() != before
+}
+
+fn take_value(words: &mut Vec<String>, flag: &str) -> Option<String> {
+    let i = words.iter().position(|w| w == flag)?;
+    if i + 1 >= words.len() {
+        return None;
+    }
+    let value = words.remove(i + 1);
+    words.remove(i);
+    Some(value)
 }
 
 /// Joins the words of a message; `-` reads stdin.
@@ -321,7 +362,11 @@ fn status(ws: &Workspace) {
     for name in agent::names(ws) {
         let Ok(cfg) = AgentConfig::load(ws, &name) else { continue };
         let st = AgentState::load(ws, &name);
-        let state = if st.state.is_empty() { "idle" } else { &st.state };
+        let state = match st.state.as_str() {
+            _ if agent::is_held(ws, &name) => "held",
+            "" => "idle",
+            s => s,
+        };
         let unread = message::unread(ws, &name).len();
         let (pass, back) = models::tally(ws, &cfg);
         let mut line = format!(

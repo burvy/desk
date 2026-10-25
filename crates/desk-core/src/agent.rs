@@ -97,6 +97,32 @@ pub fn names(ws: &Workspace) -> Vec<String> {
     ws.participants().into_iter().filter(|n| ws.agent_dir(n).join("agent.toml").is_file()).collect()
 }
 
+/// Every agent in the order you put them in (`agents/order.txt`, one name a
+/// line). Anyone not listed comes after: orchestrators first, then by name.
+pub fn ordered(ws: &Workspace) -> Vec<String> {
+    let order = read_order(ws);
+    let mut names = names(ws);
+    names.sort_by_cached_key(|n| {
+        let orchestrator = AgentConfig::load(ws, n).is_ok_and(|c| c.is_orchestrator());
+        (order.iter().position(|o| o == n).unwrap_or(usize::MAX), !orchestrator, n.clone())
+    });
+    names
+}
+
+/// Saves the order agents are listed in.
+pub fn set_order(ws: &Workspace, names: &[String]) -> Result<()> {
+    fsutil::write_atomic(&order_path(ws), &names.iter().map(|n| format!("{n}\n")).collect::<String>())
+}
+
+fn read_order(ws: &Workspace) -> Vec<String> {
+    let text = std::fs::read_to_string(order_path(ws)).unwrap_or_default();
+    text.lines().map(str::trim).filter(|l| !l.is_empty()).map(String::from).collect()
+}
+
+fn order_path(ws: &Workspace) -> PathBuf {
+    ws.agents_dir().join("order.txt")
+}
+
 /// Creates the agent, or reactivates it with new settings. Memory is kept either way.
 pub fn spawn(ws: &Workspace, name: &str, config: AgentConfig) -> Result<()> {
     if name == ws.config.human {
@@ -166,6 +192,10 @@ pub(crate) fn purge(ws: &Workspace, name: &str) -> Result<()> {
     std::fs::rename(ws.agent_dir(name), &trash).with_context(|| format!("removing {name}'s folder"))?;
     let _ = std::fs::remove_dir_all(&trash);
     let _ = std::fs::remove_dir_all(ws.transcripts_dir(name));
+    let order = read_order(ws);
+    if order.iter().any(|n| n == name) {
+        set_order(ws, &order.into_iter().filter(|n| n != name).collect::<Vec<_>>())?;
+    }
     ws.log("remove", serde_json::json!({ "agent": name }));
     Ok(())
 }
@@ -243,6 +273,27 @@ mod tests {
         assert_eq!(Task::find(&ws, &done.id).unwrap().owner().as_deref(), Some("zhipu"), "history stays");
         assert!(crate::ask::open(&ws).is_empty() && crate::lock::list(&ws).is_empty());
         assert!(remove(&ws, "zhipu").is_err());
+        let _ = std::fs::remove_dir_all(&ws.root);
+    }
+
+    #[test]
+    fn order_is_yours_then_orchestrators_then_names() {
+        let dir = std::env::temp_dir().join(format!("desk-order-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let ws = Workspace::init(&dir, "me").unwrap();
+        for (name, role) in
+            [("alpha", "worker"), ("boss", "orchestrator"), ("haiku", "worker"), ("sonnet", "worker")]
+        {
+            std::fs::create_dir_all(ws.inbox(name)).unwrap();
+            let cfg = format!("cli = \"opencode\"\nmodel = \"\"\ndir = \".\"\nrole = \"{role}\"\n");
+            std::fs::write(ws.agent_dir(name).join("agent.toml"), cfg).unwrap();
+        }
+        assert_eq!(ordered(&ws), ["boss", "alpha", "haiku", "sonnet"]);
+        set_order(&ws, &["sonnet".into(), "haiku".into()]).unwrap();
+        assert_eq!(ordered(&ws), ["sonnet", "haiku", "boss", "alpha"]);
+        std::fs::write(ws.agent_dir("haiku").join("agent.toml"), "cli = ").unwrap();
+        assert!(remove(&ws, "haiku").unwrap());
+        assert_eq!(read_order(&ws), ["sonnet"], "a removed agent leaves the order too");
         assert!(remove(&ws, "me").is_err());
         let _ = std::fs::remove_dir_all(&ws.root);
     }

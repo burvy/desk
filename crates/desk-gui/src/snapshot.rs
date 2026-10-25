@@ -44,7 +44,7 @@ pub struct Snapshot {
 impl Snapshot {
     pub fn read(ws: &Workspace) -> Self {
         let (mut agents, mut broken) = (Vec::new(), Vec::new());
-        for name in agent::names(ws) {
+        for name in agent::ordered(ws) {
             match AgentConfig::load(ws, &name) {
                 Ok(cfg) => agents.push(AgentRow {
                     cfg,

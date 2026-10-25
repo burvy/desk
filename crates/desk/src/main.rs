@@ -440,7 +440,7 @@ fn status(ws: &Workspace) {
     println!("supervisor {sup}{paused}\n");
 
     println!("AGENTS");
-    for name in agent::names(ws) {
+    for name in agent::ordered(ws) {
         let cfg = match AgentConfig::load(ws, &name) {
             Ok(c) => c,
             Err(e) => {

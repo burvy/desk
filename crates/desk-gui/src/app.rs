@@ -237,13 +237,35 @@ impl App {
         }
         ui.separator();
         ui.label(RichText::new("AGENTS").weak().small());
-        let mut pick = None;
-        for a in &self.snap.agents {
+        // Drag an agent to reorder; a line shows where it lands.
+        let (mut pick, mut moved) = (None, None);
+        for (i, a) in self.snap.agents.iter().enumerate() {
             let selected = self.view == View::Agent(a.name.clone());
-            let r = ui.selectable_label(selected, agent_label(a));
+            let r = ui.selectable_label(selected, agent_label(a)).interact(egui::Sense::drag());
             if r.clicked() {
                 pick = Some(a.name.clone());
             }
+            r.dnd_set_drag_payload(i);
+            let below = ui.ctx().pointer_hover_pos().is_some_and(|p| p.y > r.rect.center().y);
+            if r.dnd_hover_payload::<usize>().is_some() {
+                let y = if below { r.rect.bottom() } else { r.rect.top() };
+                ui.painter().hline(
+                    r.rect.x_range(),
+                    y,
+                    egui::Stroke::new(2.0, ui.visuals().selection.stroke.color),
+                );
+            }
+            if let Some(from) = r.dnd_release_payload::<usize>() {
+                moved = Some((*from, i + below as usize));
+            }
+        }
+        if let Some((from, to)) = moved {
+            let mut names: Vec<String> = self.snap.agents.iter().map(|a| a.name.clone()).collect();
+            let name = names.remove(from);
+            names.insert(if to > from { to - 1 } else { to }, name);
+            let r = agent::set_order(&self.ws, &names).map(|_| "order saved".to_string());
+            self.report(r);
+            self.refresh(true);
         }
         if let Some(name) = pick {
             self.view = View::Agent(name.clone());

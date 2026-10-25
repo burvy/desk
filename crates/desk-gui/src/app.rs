@@ -190,7 +190,7 @@ impl App {
             .iter()
             .map(|a| (a.id.clone(), a.blocking(), a.from(), a.task(), a.question().to_string()))
             .collect();
-        egui::ScrollArea::vertical().id_salt("asks").max_height(220.0).show(ui, |ui| {
+        egui::ScrollArea::vertical().id_salt("asks").auto_shrink(false).show(ui, |ui| {
             for (id, blocking, from, task, question) in asks {
                 ui.horizontal(|ui| {
                     if blocking {
@@ -199,13 +199,19 @@ impl App {
                     let task = task.map(|t| format!(" · task {t}")).unwrap_or_default();
                     ui.label(RichText::new(format!("ask {id} · from {from}{task}")).weak());
                 });
-                ui.label(question);
+                markdown(ui, &question);
                 ui.horizontal(|ui| {
                     let answer = self.answers.entry(id.clone()).or_default();
-                    let field =
-                        ui.add(egui::TextEdit::singleline(answer).hint_text("answer…").desired_width(500.0));
-                    let enter = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                    if (ui.button("Answer").clicked() || enter) && !answer.trim().is_empty() {
+                    let width = (ui.available_width() - 80.0).max(120.0);
+                    let field = ui.add(
+                        egui::TextEdit::multiline(answer)
+                            .hint_text("answer… (Ctrl+Enter sends)")
+                            .desired_rows(2)
+                            .desired_width(width),
+                    );
+                    let send = field.has_focus()
+                        && ui.input(|i| i.modifiers.command && i.key_pressed(egui::Key::Enter));
+                    if (ui.button("Answer").clicked() || send) && !answer.trim().is_empty() {
                         let text = std::mem::take(answer);
                         let r = ask::answer(&self.ws, &id, &text).map(|a| format!("answered ask {}", a.id));
                         self.report(r);
@@ -374,11 +380,14 @@ impl App {
                 "Send the text alone and verbatim, as its own run: for CLI commands like /compact",
             );
         });
+        // The box fills the panel, so dragging its edge up gives more room to write.
+        let row = ui.text_style_height(&egui::TextStyle::Body);
+        let rows = (((ui.available_height() - 16.0) / row) as usize).max(2);
         ui.horizontal(|ui| {
             let field = ui.add(
                 egui::TextEdit::multiline(&mut self.compose.text)
                     .hint_text("Message… (Ctrl+Enter to send)")
-                    .desired_rows(2)
+                    .desired_rows(rows)
                     .desired_width(ui.available_width() - 70.0),
             );
             let hotkey =
@@ -607,10 +616,9 @@ impl App {
             ui.label("This task no longer exists.");
             return;
         };
-        ui.horizontal(|ui| {
-            ui.heading(format!("{} {}", t.id, t.title()));
-        });
-        ui.horizontal(|ui| {
+        ui.add(egui::Label::new(RichText::new(format!("{} {}", t.id, t.title())).heading()).wrap());
+        // Wraps, so a long file list never runs under the task board.
+        ui.horizontal_wrapped(|ui| {
             let mut status = t.status();
             egui::ComboBox::from_id_salt("status").selected_text(&status).show_ui(ui, |ui| {
                 for s in task::STATUSES {
@@ -718,10 +726,15 @@ impl App {
         ui.ctx().request_repaint_after(Duration::from_millis(500));
 
         egui::Panel::top("top").show(ui, |ui| self.top_bar(ui));
+        // Drag a panel's edge to resize it; Ctrl +/- zooms everything.
         if !self.snap.asks.is_empty() {
-            egui::Panel::top("asks").show(ui, |ui| self.asks(ui));
+            egui::Panel::top("asks")
+                .resizable(true)
+                .default_size(260.0)
+                .min_size(80.0)
+                .show(ui, |ui| self.asks(ui));
         }
-        egui::Panel::bottom("compose").show(ui, |ui| self.compose(ui));
+        egui::Panel::bottom("compose").resizable(true).min_size(60.0).show(ui, |ui| self.compose(ui));
         egui::Panel::left("agents").resizable(true).default_size(240.0).show(ui, |ui| self.agents(ui));
         egui::Panel::right("tasks").resizable(true).default_size(300.0).show(ui, |ui| self.tasks(ui));
         egui::CentralPanel::default_margins().show(ui, |ui| match self.view.clone() {
@@ -849,7 +862,9 @@ fn markdown(ui: &mut Ui, text: &str) {
             ui.label(RichText::new(h).strong());
         } else if let Some(h) = line.strip_prefix("# ") {
             ui.label(RichText::new(h).heading());
-        } else if !line.trim().is_empty() {
+        } else if line.trim().is_empty() {
+            ui.add_space(4.0); // paragraph break
+        } else {
             ui.label(line);
         }
     }

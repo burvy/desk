@@ -3,7 +3,7 @@
 A small, transparent harness for running a team of coding agents on one machine.
 The orchestrator plans and merges; workers implement; everything they do is plain files you can read.
 
-Status: v0 (core + CLI) works. The GUI is next.
+Status: v0 (core + CLI) works. v1 GUI (`desk-gui`) works: agents, transcripts, task board, asks, inbox, composer, take-over.
 
 ## Principles
 
@@ -239,7 +239,7 @@ v0 ships `claude` (`-p --output-format stream-json --resume`) and `opencode` (`r
 - Right: the task board by status.
 - Top: the Asks panel. Blocking asks come first.
 - Bottom: message any agent (note or interrupt).
-- Pause-all, and open-in-terminal. Later: take-over mode, which swaps the pane for an embedded `egui_term` terminal.
+- Pause-all, and take-over: holds the agent's mail and opens its session in a real terminal (`desk take-over` / `hand-back` from the CLI). Later: an embedded `egui_term` pane instead.
 
 ## Roadmap
 

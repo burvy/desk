@@ -17,3 +17,8 @@ One line per decision, with the reason. Newest last.
 - Locks are released when their agent is killed, reset, or stops after failures. They aren't released at the end of every run, because one lock (a dev server) often spans several turns.
 - Unblocking (an answered ask) restores the status from before the block, read from the event log, instead of guessing `working`.
 - The message budget counts agent-to-agent messages on a task, from `log/events.jsonl`. Messages to and from the human never count.
+- The GUI is its own binary, `desk-gui`. If no supervisor is running it starts one in a thread, and closing the window stops it cleanly.
+- The GUI uses eframe's `glow` (OpenGL) backend. The default `wgpu` backend segfaulted on startup on this machine, and glow is lighter anyway.
+- egui's bundled fonts lack symbols like ● ⚙ →, so the GUI falls back to the OS symbol font (Segoe UI Symbol on Windows).
+- Take-over v1 is a real terminal, not an embedded one. `HELD` stops delivery (and stops any current run, since two writers would corrupt one session), and the GUI opens `claude --resume` / `opencode --session` in Windows Terminal. The embedded `egui_term` pane stays on the roadmap.
+- `desk send` accepts messages with hyphens (`a -> b`), and flags written after the message still count as flags. Agents ran into both.

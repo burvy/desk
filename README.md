@@ -3,7 +3,7 @@
 A small, transparent harness for a team of coding agents. Agents message each other through plain files. desk delivers the messages and runs the agents headless.
 
 ```
-cargo install --path crates/desk
+cargo install --path crates/desk && cargo install --path crates/desk-gui
 
 desk init myteam --human you && cd myteam
 desk spawn mike --cli claude   --model sonnet                      --dir ~/code/game --role orchestrator
@@ -14,6 +14,7 @@ desk status                                # agents, tasks, asks, locks
 desk peek rook                             # what rook is doing
 desk inbox                                 # what the agents told you
 desk answer 3 "falling block"              # answer an agent's question
+desk-gui                                   # or all of the above in a window
 ```
 
 Everything lives in the workspace folder. `cat` it, edit it, commit it. `DESIGN.md` explains how it works, and `DECISIONS.md` explains why.

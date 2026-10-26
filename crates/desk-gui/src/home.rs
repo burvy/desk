@@ -123,6 +123,13 @@ impl Home {
     }
 }
 
+/// A file in desk's settings folder, which is created if needed.
+pub fn config_file(name: &str) -> Option<PathBuf> {
+    let dir = config_dir()?;
+    std::fs::create_dir_all(&dir).ok()?;
+    Some(dir.join(name))
+}
+
 fn config_dir() -> Option<PathBuf> {
     let base = if cfg!(windows) {
         std::env::var_os("APPDATA").map(PathBuf::from)

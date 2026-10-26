@@ -4,6 +4,7 @@
 use crate::Embedded;
 use crate::agent_form::AgentForm;
 use crate::clis::CliEditor;
+use crate::notify::Notifier;
 use crate::snapshot::{AgentRow, Snapshot};
 use desk_core::adapter::{self, Event, Preset};
 use desk_core::agent::{self, AgentConfig};
@@ -14,6 +15,7 @@ use desk_core::{Workspace, ask, fsutil, supervisor};
 use eframe::egui::{self, Color32, RichText, Ui};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 const BOARD: [&str; 6] = ["blocked", "review", "working", "assigned", "open", "proposed"];
@@ -60,6 +62,8 @@ pub struct App {
     show_log: bool,
     /// The agent whose Remove is waiting for a yes.
     removing: Option<String>,
+    /// Started on the first frame, which has the egui context it needs.
+    notifier: Option<Notifier>,
     /// Set by "Workspaces"; the window goes back to the start screen.
     pub close_requested: bool,
 }
@@ -87,6 +91,7 @@ impl App {
             clis: CliEditor::default(),
             show_log: false,
             removing: None,
+            notifier: None,
             close_requested: false,
         }
     }
@@ -140,6 +145,18 @@ impl App {
                 .clicked()
             {
                 self.close_requested = true;
+            }
+            if let Some(n) = &self.notifier {
+                let on = n.enabled.load(Ordering::SeqCst);
+                let hint = if on {
+                    "Notifying you (sound and pop-up) when someone needs you or everyone's idle, while this window isn't in front. Click to mute."
+                } else {
+                    "Notifications are off. Click to turn them on."
+                };
+                let bell = if on { RichText::new("🔔") } else { RichText::new("🔕").weak() };
+                if ui.small_button(bell).on_hover_text(hint).clicked() {
+                    n.toggle();
+                }
             }
             ui.separator();
             if self.embedded.is_some() {
@@ -724,6 +741,9 @@ impl App {
     pub fn ui(&mut self, ui: &mut Ui) {
         self.refresh(false);
         ui.ctx().request_repaint_after(Duration::from_millis(500));
+        let ws = &self.ws;
+        let notifier = self.notifier.get_or_insert_with(|| Notifier::start(ws, ui.ctx()));
+        notifier.focused.store(ui.input(|i| i.focused), Ordering::SeqCst);
 
         egui::Panel::top("top").show(ui, |ui| self.top_bar(ui));
         // Drag a panel's edge to resize it; Ctrl +/- zooms everything.

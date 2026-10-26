@@ -15,7 +15,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const BUILTIN: [(&str, &str); 8] = [
+const BUILTIN: [(&str, &str); 9] = [
     ("claude", include_str!("../../presets/claude.toml")),
     ("opencode", include_str!("../../presets/opencode.toml")),
     ("codex", include_str!("../../presets/codex.toml")),
@@ -24,6 +24,7 @@ const BUILTIN: [(&str, &str); 8] = [
     ("goose", include_str!("../../presets/goose.toml")),
     ("cline", include_str!("../../presets/cline.toml")),
     ("zcode", include_str!("../../presets/zcode.toml")),
+    ("junie", include_str!("../../presets/junie.toml")),
 ];
 
 /// One preset. In `args`, `bypass`, `resume` and the rest, these are filled in:

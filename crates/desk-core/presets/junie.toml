@@ -1,0 +1,14 @@
+# Flags from Junie's CLI reference (junie.jetbrains.com/docs/parameters.html,
+# beta); not yet run by desk. Junie takes the task as an argument, so desk
+# writes the prompt to a file and points Junie at it. It has no headless
+# permission flag (`--brave` is interactive only), no session id in plain text
+# output, and its system prompt flag takes text, not a file, so the role goes
+# in the prompt. Unknown model names make Junie list the valid ones.
+description = "Junie, JetBrains' CLI (untested)"
+program = "junie"
+args = ["--skip-update-check", "Read {prompt_file} and do what it says."]
+model_args = ["--model", "{model}"]
+session = "none"
+output = "text"
+interactive = ["junie", "--skip-update-check", "--model", "{model}"]
+models = ["sonnet", "opus"]

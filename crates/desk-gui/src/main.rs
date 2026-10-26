@@ -9,6 +9,7 @@ mod agent_form;
 mod app;
 mod clis;
 mod home;
+mod notify;
 mod snapshot;
 mod term_view;
 

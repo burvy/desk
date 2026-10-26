@@ -125,6 +125,9 @@ impl AgentForm {
                     });
                 }
             });
+            ui.end_row();
+            ui.label("");
+            ui.label(RichText::new("Not listed? Add it in the CLIs view.").weak().small());
             if self.cli != before {
                 self.model = self.preset().and_then(|p| p.models.first().cloned()).unwrap_or_default();
                 if !self.editing {
@@ -137,7 +140,7 @@ impl AgentForm {
             ui.vertical(|ui| {
                 ui.add(
                     egui::TextEdit::singleline(&mut self.model)
-                        .hint_text("empty: the CLI's default")
+                        .hint_text("any model the CLI takes; empty: its default")
                         .desired_width(300.0),
                 );
                 let suggestions = self.preset().map(|p| p.models.clone()).unwrap_or_default();

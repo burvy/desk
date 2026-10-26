@@ -8,12 +8,14 @@ use crate::notify::Notifier;
 use crate::snapshot::{AgentRow, Snapshot};
 use desk_core::adapter::{self, Event, Preset};
 use desk_core::agent::{self, AgentConfig};
-use desk_core::message::{self, Kind};
+use desk_core::message::{self, Kind, Message};
 use desk_core::task::{self, Task};
 use desk_core::transcript::{self, Entry};
 use desk_core::{Workspace, ask, fsutil, supervisor};
 use eframe::egui::{self, Color32, RichText, Ui};
-use std::collections::HashMap;
+use egui_commonmark::{CommonMarkCache, CommonMarkViewer};
+use std::collections::{HashMap, HashSet};
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
@@ -64,6 +66,8 @@ pub struct App {
     removing: Option<String>,
     /// Started on the first frame, which has the egui context it needs.
     notifier: Option<Notifier>,
+    md: CommonMarkCache,
+    inbox: InboxState,
     /// Set by "Workspaces"; the window goes back to the start screen.
     pub close_requested: bool,
 }
@@ -92,6 +96,8 @@ impl App {
             show_log: false,
             removing: None,
             notifier: None,
+            md: CommonMarkCache::default(),
+            inbox: InboxState::default(),
             close_requested: false,
         }
     }
@@ -107,6 +113,11 @@ impl App {
         self.snap = Snapshot::read(&self.ws);
         if self.view == View::Activity {
             self.activity = activity_lines(&self.ws, self.embedded.as_ref());
+        }
+        if self.view == View::Inbox {
+            self.inbox.load_history(&self.ws);
+        } else {
+            self.inbox.left();
         }
         if let View::Agent(name) = &self.view {
             self.load_transcript(&name.clone());
@@ -216,7 +227,7 @@ impl App {
                     let task = task.map(|t| format!(" · task {t}")).unwrap_or_default();
                     ui.label(RichText::new(format!("ask {id} · from {from}{task}")).weak());
                 });
-                markdown(ui, &question);
+                ui.push_id(("ask", &id), |ui| markdown(ui, &mut self.md, &question));
                 ui.horizontal(|ui| {
                     let answer = self.answers.entry(id.clone()).or_default();
                     let width = (ui.available_width() - 80.0).max(120.0);
@@ -510,7 +521,7 @@ impl App {
                     );
                 }
                 for (i, e) in self.transcript.entries.iter().enumerate() {
-                    entry(ui, i, e, &short);
+                    entry(ui, &mut self.md, i, e, &short);
                 }
             },
         );
@@ -675,44 +686,81 @@ impl App {
         }
         ui.separator();
         egui::ScrollArea::vertical().id_salt("task").auto_shrink(false).show(ui, |ui| {
-            markdown(ui, &t.doc.body);
+            markdown(ui, &mut self.md, &t.doc.body);
             for report in fsutil::files_with_ext(&t.dir.join("reports"), "md") {
                 let who = report.file_stem().unwrap_or_default().to_string_lossy().into_owned();
                 egui::CollapsingHeader::new(format!("Report: {who}"))
                     .id_salt(&report)
                     .default_open(true)
                     .show(ui, |ui| {
-                        markdown(ui, &std::fs::read_to_string(&report).unwrap_or_default());
+                        markdown(ui, &mut self.md, &std::fs::read_to_string(&report).unwrap_or_default());
                     });
             }
         });
     }
 
     fn inbox_view(&mut self, ui: &mut Ui) {
+        // Unread and recently read together, newest first: new mail is at the top.
+        let mut all: Vec<Message> =
+            self.snap.inbox.iter().chain(self.inbox.history.iter()).cloned().collect();
+        all.sort_by(|a, b| b.path.file_name().cmp(&a.path.file_name()));
+        all.dedup_by(|a, b| a.path.file_name() == b.path.file_name());
+        let mut senders: Vec<String> = all.iter().map(|m| m.from.clone()).collect();
+        senders.sort();
+        senders.dedup();
         ui.horizontal(|ui| {
             ui.heading("Inbox");
-            if !self.snap.inbox.is_empty() && ui.button("Mark all read").clicked() {
-                let paths: Vec<PathBuf> = self.snap.inbox.iter().map(|m| m.path.clone()).collect();
-                let human = self.ws.config.human.clone();
-                let r = message::mark_read(&self.ws, &human, &paths).map(|_| "inbox cleared");
-                self.report(r);
-            }
+            let shown = self.inbox.from.clone().unwrap_or_else(|| "everyone".into());
+            egui::ComboBox::from_id_salt("inbox_from").selected_text(format!("from {shown}")).show_ui(
+                ui,
+                |ui| {
+                    ui.selectable_value(&mut self.inbox.from, None, "everyone");
+                    for s in &senders {
+                        ui.selectable_value(&mut self.inbox.from, Some(s.clone()), s);
+                    }
+                },
+            );
         });
         ui.separator();
-        if self.snap.inbox.is_empty() {
-            ui.label(RichText::new("Nothing unread. Read messages are in agents/<you>/inbox/read/.").weak());
+
+        // What you've had in front of you for a moment counts as read. It
+        // stays marked new until you leave the inbox.
+        let unread: Vec<PathBuf> = self.snap.inbox.iter().map(|m| m.path.clone()).collect();
+        if unread.is_empty() || !ui.input(|i| i.focused) {
+            self.inbox.since = None;
+        } else if self.inbox.since.get_or_insert_with(Instant::now).elapsed() > Duration::from_secs(2) {
+            self.inbox.fresh.extend(unread.iter().filter_map(|p| p.file_name().map(OsString::from)));
+            let human = self.ws.config.human.clone();
+            if let Err(e) = message::mark_read(&self.ws, &human, &unread) {
+                self.report(Err::<String, _>(e));
+            }
+            self.inbox.since = None;
+            self.refresh(true);
+        }
+
+        if all.is_empty() {
+            ui.label(RichText::new("No mail yet. Agents' messages to you show up here.").weak());
         }
         let mut reply = None;
+        let (fresh, from, md) = (&self.inbox.fresh, &self.inbox.from, &mut self.md);
         egui::ScrollArea::vertical().id_salt("inbox").auto_shrink(false).show(ui, |ui| {
-            for m in &self.snap.inbox {
+            for m in all.iter().filter(|m| from.as_ref().is_none_or(|f| *f == m.from)) {
+                let new = unread.contains(&m.path) || m.path.file_name().is_some_and(|n| fresh.contains(n));
                 ui.horizontal(|ui| {
+                    if new {
+                        ui.label(RichText::new("●").color(BLUE));
+                    }
                     let task = m.task.as_ref().map(|t| format!(" · task {t}")).unwrap_or_default();
-                    ui.label(RichText::new(format!("from {}{task}", m.from)).strong());
+                    let head = RichText::new(format!("{}{task}", m.from));
+                    ui.label(if new { head.strong() } else { head });
+                    if let Some(t) = m.sent_at() {
+                        ui.label(RichText::new(when(t)).weak().small());
+                    }
                     if m.from != "desk" && ui.small_button("Reply").clicked() {
                         reply = Some((m.from.clone(), m.task.clone()));
                     }
                 });
-                ui.label(m.body.trim_end());
+                ui.push_id(&m.path, |ui| markdown(ui, md, m.body.trim_end()));
                 ui.separator();
             }
         });
@@ -831,7 +879,7 @@ impl Shortener {
     }
 }
 
-fn entry(ui: &mut Ui, i: usize, e: &Entry, short: &Shortener) {
+fn entry(ui: &mut Ui, md: &mut CommonMarkCache, i: usize, e: &Entry, short: &Shortener) {
     match e {
         Entry::Prompt { ts, text } => {
             ui.add_space(6.0);
@@ -855,7 +903,7 @@ fn entry(ui: &mut Ui, i: usize, e: &Entry, short: &Shortener) {
             });
         }
         Entry::Event(Event::Text(t)) if !t.trim().is_empty() => {
-            ui.label(t.trim());
+            ui.push_id(("text", i), |ui| markdown(ui, md, t.trim()));
         }
         Entry::Event(Event::Tool { name, detail }) => {
             ui.label(
@@ -874,19 +922,55 @@ fn entry(ui: &mut Ui, i: usize, e: &Entry, short: &Shortener) {
     }
 }
 
-/// Just enough markdown for task files: `## ` headings and plain lines.
-fn markdown(ui: &mut Ui, text: &str) {
-    for line in text.lines() {
-        if let Some(h) = line.strip_prefix("## ") {
-            ui.add_space(6.0);
-            ui.label(RichText::new(h).strong());
-        } else if let Some(h) = line.strip_prefix("# ") {
-            ui.label(RichText::new(h).heading());
-        } else if line.trim().is_empty() {
-            ui.add_space(4.0); // paragraph break
-        } else {
-            ui.label(line);
+/// Markdown as it's meant to look: bold, lists, code, headings.
+fn markdown(ui: &mut Ui, md: &mut CommonMarkCache, text: &str) {
+    CommonMarkViewer::new().show(ui, md, text);
+}
+
+/// "21:31 · 12m ago", with the date when it isn't today.
+fn when(t: chrono::DateTime<chrono::Local>) -> String {
+    let now = chrono::Local::now();
+    let mins = (now - t).num_minutes().max(0);
+    let ago = match mins {
+        0 => "just now".to_string(),
+        1..60 => format!("{mins}m ago"),
+        60..1440 => format!("{}h ago", mins / 60),
+        _ => format!("{}d ago", mins / 1440),
+    };
+    let at = if t.date_naive() == now.date_naive() { t.format("%H:%M") } else { t.format("%b %d, %H:%M") };
+    format!("{at} · {ago}")
+}
+
+/// The inbox's view state: recent read mail, and what's new this visit.
+#[derive(Default)]
+struct InboxState {
+    /// Read messages, newest first. Files in `read/` never change, so each loads once.
+    history: Vec<Message>,
+    loaded: HashMap<PathBuf, Message>,
+    /// Marked read during this visit; still shown as new.
+    fresh: HashSet<OsString>,
+    /// When unread mail came into view.
+    since: Option<Instant>,
+    /// Show only one sender's mail.
+    from: Option<String>,
+}
+
+impl InboxState {
+    fn load_history(&mut self, ws: &Workspace) {
+        let paths = message::read_paths(ws, &ws.config.human, 150);
+        for p in &paths {
+            if !self.loaded.contains_key(p)
+                && let Ok(m) = Message::load(p)
+            {
+                self.loaded.insert(p.clone(), m);
+            }
         }
+        self.history = paths.iter().filter_map(|p| self.loaded.get(p).cloned()).collect();
+    }
+
+    fn left(&mut self) {
+        self.fresh.clear();
+        self.since = None;
     }
 }
 

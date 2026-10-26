@@ -105,6 +105,23 @@ pub fn send(
     Ok(path)
 }
 
+impl Message {
+    /// When it was sent, from its file name (written in UTC).
+    pub fn sent_at(&self) -> Option<chrono::DateTime<chrono::Local>> {
+        let name = self.path.file_name()?.to_str()?;
+        let t = chrono::NaiveDateTime::parse_from_str(name.get(..17)?, "%Y-%m-%dT%H%M%S").ok()?;
+        Some(t.and_utc().with_timezone(&chrono::Local))
+    }
+}
+
+/// The newest `limit` messages already read, newest first.
+pub fn read_paths(ws: &Workspace, name: &str, limit: usize) -> Vec<PathBuf> {
+    let mut v = fsutil::files_with_ext(&ws.inbox(name).join("read"), "md");
+    v.reverse();
+    v.truncate(limit);
+    v
+}
+
 /// Unread messages, oldest first. A file that isn't a message (no header,
 /// not UTF-8) moves to `inbox/bad/`, so it's neither stuck nor silently skipped.
 pub fn unread(ws: &Workspace, name: &str) -> Vec<Message> {

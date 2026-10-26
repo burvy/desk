@@ -1,5 +1,7 @@
 # desk
 
+![demo](docs/demo.png)
+
 A small, transparent harness for a team of coding agents. Agents message each other through plain files. desk delivers the messages and runs the agents headless.
 
 ```

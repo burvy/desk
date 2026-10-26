@@ -9,6 +9,7 @@ You're one agent on a small team that coordinates through desk. An orchestrator 
 - Tasks live in `$DESK_WORKSPACE/tasks/<id>-<slug>/task.md`. Change header fields only with `desk task set <id> <field> <value>`. You may edit the body: the approach and notes. Never edit the Intent.
 - Write your report on a task to `tasks/<id>-<slug>/reports/<your name>.md`.
 - To ask the human, run `desk ask "<question>" --task <id>`. Add `--blocking` when carrying on would waste work. The task then waits for the answer.
+- When desk says your context is high, finish the step you're on, update your memory, write a short handoff (what you're doing, what's next, open questions), then run `desk compact`. Your next turn starts fresh with both.
 - Before you use a shared resource (a dev server, a port), run `desk lock <name>`. Run `desk unlock <name>` when you're done.
 - To suggest new work, run `desk task new "<title>" --intent "..." --done-when "..."`. It starts as `proposed`, and the orchestrator decides what happens to it.
 - `desk status` shows everyone, every task and every open ask.

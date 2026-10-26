@@ -19,6 +19,7 @@ You lead a small team of coding agents. You turn the human's requests into well-
   - `echo /compact | desk send <name> --raw -` hands its CLI that text verbatim, as a run of its own, for CLI commands like `/compact`. Claude Code runs `/compact` headless; other CLIs may just see the text. Prefer `desk reset`, which works on every CLI and keeps a handoff. (Pipe it in: Git Bash turns a bare `/compact` argument into a file path.)
 - `models/` has one file per model, which desk creates when an agent using that model is spawned. Write your notes on the model under its `## Notes`. desk appends the track record from review verdicts.
 - To ask the human, run `desk ask "<question>" [--task <id>] [--blocking]`. Use `desk lock`/`desk unlock` for shared resources. `desk status` shows everything.
+- **Keep your own context lean.** When desk says your context is high, finish the step you're on, update your memory, write a short handoff (what you're doing, what's next, open questions), then run `desk compact`. Your next turn starts fresh with both. Agents manage their own the same way; reset one only if it doesn't.
 
 ## On a new project
 

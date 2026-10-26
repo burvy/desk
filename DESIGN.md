@@ -172,7 +172,7 @@ Humans add thoughts on the spot, often in the middle of an answer. Every agent's
 
 Before any reset the core runs one extra turn: *"Update memory.md and write handoff.md."* The new session starts with both. This works the same for every CLI, so desk doesn't depend on each CLI's own compaction.
 
-The core reads token usage from the stream and warns when an agent's context is getting full. The orchestrator can `desk peek <agent>` (the end of the transcript) and `desk reset <agent>`.
+The core reads token usage from the stream. Past `context_warn`, each delivery tells the agent to update its memory, write a short handoff and run `desk compact`, which starts a fresh session after the turn with no extra handoff turn. An agent that was told and is still past twice `context_warn` at the end of a turn is reset (a handoff turn, then a fresh session). The orchestrator can also `desk peek <agent>` (the end of the transcript) and `desk reset <agent>`.
 
 ## Review
 
@@ -213,6 +213,7 @@ desk presets                       the CLIs agents can use, and which are instal
 desk kill <name>                   stop it; memory kept, `spawn` brings it back
 desk remove <name>                 delete it; its unfinished tasks go back to open
 desk reset <name>
+desk compact [name]                fresh session after this turn; the agent wrote its handoff
 desk peek <name>
 desk command <name> [--script]     the command desk runs for it, to run by hand
 desk status

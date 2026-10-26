@@ -16,6 +16,8 @@ pub struct Delivery<'a> {
     /// Set for an orchestrator's one-task turn.
     pub task: Option<&'a Task>,
     pub messages: &'a [Message],
+    /// Tokens in context, when past the workspace's `context_warn`.
+    pub full: Option<u64>,
 }
 
 pub fn delivery(ws: &Workspace, d: &Delivery) -> String {
@@ -62,6 +64,20 @@ pub fn delivery(ws: &Workspace, d: &Delivery) -> String {
          use `desk send` to reach anyone, and put every question for the human in `desk ask`.",
         if n == 1 { "" } else { "s" }
     );
+    if let Some(tokens) = d.full {
+        let _ = writeln!(
+            p,
+            "Your context is at {}k tokens, past the {}k mark; a long context makes you slower and less sharp. \
+             At the next good stopping point (not mid-change): update your memory ({}), write a short handoff \
+             ({}: what you're doing, what's next, open questions), then run `desk compact`. Your next turn \
+             starts a fresh session with both. Past {}k, desk resets you after this turn if you haven't.",
+            tokens / 1000,
+            ws.config.context_warn / 1000,
+            dir.join("memory.md").display(),
+            dir.join("handoff.md").display(),
+            ws.config.context_warn * 2 / 1000
+        );
+    }
     if let Some(t) = d.task {
         let _ = writeln!(
             p,

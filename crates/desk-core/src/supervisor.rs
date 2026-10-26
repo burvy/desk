@@ -50,6 +50,8 @@ pub(crate) struct Run {
     /// a question left in the transcript is one the human never sees.
     last_text: String,
     reached_out: bool,
+    /// Its prompt said to compact; still full at the end, it gets reset.
+    asked_to_compact: bool,
 }
 
 enum Update {
@@ -229,6 +231,15 @@ impl Supervisor {
             st.save(&self.ws, name)?;
             notes.push(format!("{name}: retrying"));
         }
+        // The agent wrote its handoff and asked for a fresh session.
+        if dir.join("COMPACT").exists() {
+            let _ = std::fs::remove_file(dir.join("COMPACT"));
+            st.session = None;
+            st.context_tokens = 0;
+            st.save(&self.ws, name)?;
+            self.warned.remove(name);
+            notes.push(format!("{name}: compacted; its next turn starts fresh"));
+        }
         if st.state == "inactive" {
             st.state = "idle".into(); // respawned
             st.save(&self.ws, name)?;
@@ -279,6 +290,7 @@ impl Supervisor {
                         name,
                         dir: &cfg.dir,
                         new_session: st.session.is_none(),
+                        full: (st.context_tokens >= self.ws.config.context_warn).then_some(st.context_tokens),
                         role: role.as_deref(),
                         task: task.as_ref(),
                         messages: &batch,
@@ -292,10 +304,15 @@ impl Supervisor {
             (text, delivered, false, note)
         };
         // A CLI that won't start (not installed, bad folder) backs off like a failed run.
+        // A raw message carries no desk text, so it doesn't count as asking.
+        let asked = !handoff && st.context_tokens >= self.ws.config.context_warn && !text.starts_with('/');
         if let Err(e) = self.launch(name, &cfg, &mut st, text, delivered, handoff) {
             self.fail(name, &mut st, format!("couldn't start the CLI: {e:#}"), notes);
             st.save(&self.ws, name)?;
             return Ok(());
+        }
+        if let Some(run) = self.runs.get_mut(name) {
+            run.asked_to_compact = asked;
         }
         notes.push(note);
         Ok(())
@@ -378,6 +395,7 @@ impl Supervisor {
                 error: None,
                 last_text: String::new(),
                 reached_out: false,
+                asked_to_compact: false,
             },
         );
         Ok(())
@@ -397,7 +415,7 @@ impl Supervisor {
                 if context < limit {
                     self.warned.remove(name);
                 } else if self.warned.insert(name.to_string()) {
-                    self.warn_context(name, context, notes);
+                    notes.push(format!("{name}: context at {context} tokens; it's asked to compact"));
                 }
             }
             Event::Error(msg) => {
@@ -441,6 +459,16 @@ impl Supervisor {
                 notes.push(format!("{name}: handoff written, session reset"));
             } else {
                 notes.push(format!("{name}: done"));
+                // Told to compact and didn't: desk resets it, handoff first.
+                let hard = self.ws.config.context_warn.saturating_mul(2);
+                if run.asked_to_compact
+                    && hard > 0
+                    && st.context_tokens >= hard
+                    && !dir.join("COMPACT").exists()
+                {
+                    let _ = fsutil::write_atomic(&dir.join("RESET"), "");
+                    notes.push(format!("{name}: context at {} tokens; resetting it", st.context_tokens));
+                }
                 if !run.reached_out && ends_in_question(&run.last_text) {
                     let q = format!(
                         "{}\n\n*desk raised this: {name} ended its turn with this question in its transcript, \
@@ -517,21 +545,6 @@ impl Supervisor {
             kill_tree(run.pid);
             notes.push(format!("{name}: stopping ({reason})"));
         }
-    }
-
-    /// Tells the orchestrator (or the human, if the orchestrator is the one
-    /// that's full) that a reset is due.
-    fn warn_context(&self, name: &str, tokens: u64, notes: &mut Vec<String>) {
-        let orchestrator = agent::names(&self.ws).into_iter().find(|n| {
-            n != name && AgentConfig::load(&self.ws, n).is_ok_and(|c| c.is_orchestrator() && c.active)
-        });
-        let to = orchestrator.unwrap_or_else(|| self.ws.config.human.clone());
-        let body = format!(
-            "{name}'s context is at {tokens} tokens. Consider `desk reset {name}` once it reaches a \
-             good stopping point; it writes a handoff first."
-        );
-        let _ = message::send(&self.ws, "desk", &to, None, Kind::Note, &body);
-        notes.push(format!("{name}: context at {tokens} tokens, told {to}"));
     }
 
     fn beat(&self) -> Result<()> {

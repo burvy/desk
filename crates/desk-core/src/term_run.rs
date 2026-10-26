@@ -193,6 +193,15 @@ impl Supervisor {
             }
             notes.push(format!("{name}: done"));
         }
+        // The agent wrote its handoff and asked for a fresh session: restart its CLI.
+        if dir.join("COMPACT").exists() && t.busy_since.is_none() && t.pending.is_none() {
+            let _ = std::fs::remove_file(dir.join("COMPACT"));
+            st.context_tokens = 0;
+            st.save(&ws, name)?;
+            self.close_terminal(name);
+            notes.push(format!("{name}: compacted; its CLI restarts fresh"));
+            return Ok(());
+        }
 
         let held = agent::is_held(&ws, name);
         let unread = message::unread(&ws, name);
@@ -265,6 +274,7 @@ impl Supervisor {
                         name,
                         dir: &cfg.dir,
                         new_session: t.fresh,
+                        full: (st.context_tokens >= ws.config.context_warn).then_some(st.context_tokens),
                         role: role.as_deref(),
                         task: task.as_ref(),
                         messages: &batch,

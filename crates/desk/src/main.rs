@@ -95,6 +95,11 @@ enum Cmd {
     Reset {
         name: String,
     },
+    /// Start fresh after this turn, once you've written your own handoff.
+    /// Without a name, the agent calling it.
+    Compact {
+        name: Option<String>,
+    },
     /// Hold an agent's mail and print the command that opens its session for you.
     TakeOver {
         name: String,
@@ -304,6 +309,15 @@ Add or override one with presets/<name>.toml in the workspace."
         Cmd::Reset { name } => {
             agent::request_reset(&ws, &name)?;
             println!("{name} will write a handoff, then start fresh");
+        }
+        Cmd::Compact { name } => {
+            let name = match name {
+                Some(n) => n,
+                None if me != ws.config.human => me.clone(),
+                None => anyhow::bail!("name the agent to compact"),
+            };
+            agent::request_compact(&ws, &name)?;
+            println!("{name} starts a fresh session after this turn, with its memory and handoff");
         }
         Cmd::Command { name, script } => {
             let line = supervisor::command_line(&ws, &name)?;

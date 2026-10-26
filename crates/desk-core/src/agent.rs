@@ -200,6 +200,15 @@ pub(crate) fn purge(ws: &Workspace, name: &str) -> Result<()> {
     Ok(())
 }
 
+/// A fresh session once the current turn ends, for an agent that has written
+/// its own handoff: the self-managed version of a reset, with no extra turn.
+pub fn request_compact(ws: &Workspace, name: &str) -> Result<()> {
+    AgentConfig::load(ws, name)?;
+    fsutil::write_atomic(&ws.agent_dir(name).join("COMPACT"), "")?;
+    ws.log("compact_requested", serde_json::json!({ "agent": name, "by": ws.caller() }));
+    Ok(())
+}
+
 /// Asks the supervisor for a handoff turn, then a fresh session.
 pub fn request_reset(ws: &Workspace, name: &str) -> Result<()> {
     AgentConfig::load(ws, name)?;

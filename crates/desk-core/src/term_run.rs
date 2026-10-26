@@ -125,7 +125,7 @@ impl Supervisor {
             h.finish()
         };
         // Not at its prompt (a trust or permission dialog, say): leave it to you.
-        let ready = preset.ready.as_ref().is_none_or(|r| screen.contains(r.as_str()));
+        let ready = preset.ready.is_empty() || preset.ready.iter().any(|r| screen.contains(r.as_str()));
         if hash != t.screen_hash {
             t.screen_hash = hash;
             t.changed = Instant::now();
@@ -180,7 +180,10 @@ impl Supervisor {
             if !unread.is_empty() && st.state != "waiting" {
                 st.state = "waiting".into();
                 st.save(&ws, name)?;
-                notes.push(format!("{name}: its CLI is asking something; answer it in the terminal"));
+                let looking_for = preset.ready.join("` or `");
+                notes.push(format!(
+                    "{name}: waiting for its CLI's prompt (`{looking_for}` on screen); if it's asking something, answer it in the terminal"
+                ));
             }
             return Ok(());
         }

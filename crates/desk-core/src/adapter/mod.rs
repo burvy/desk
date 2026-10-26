@@ -10,7 +10,7 @@ mod opencode;
 use crate::agent::AgentConfig;
 use crate::workspace::Workspace;
 use anyhow::{Context, Result, bail};
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -61,7 +61,9 @@ pub struct Preset {
     pub interrupt: Option<String>,
     /// Text a terminal agent's screen shows only when its CLI is waiting for
     /// a message (not in a startup or permission dialog). desk types only then.
-    pub ready: Option<String>,
+    /// One string, or a list where any one will do.
+    #[serde(deserialize_with = "one_or_many")]
+    pub ready: Vec<String>,
     /// Environment for the CLI. An empty value removes the variable.
     pub env: BTreeMap<String, String>,
     /// Environment set only when the agent sets a model (placeholders filled),
@@ -365,6 +367,19 @@ pub fn clip(s: &str, max: usize) -> String {
     out
 }
 
+fn one_or_many<'de, D: Deserializer<'de>>(d: D) -> std::result::Result<Vec<String>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum OneOrMany {
+        One(String),
+        Many(Vec<String>),
+    }
+    Ok(match OneOrMany::deserialize(d)? {
+        OneOrMany::One(s) => vec![s],
+        OneOrMany::Many(v) => v,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -375,6 +390,16 @@ mod tests {
             Preset::parse(name, text).unwrap();
         }
         Preset::parse("template", TEMPLATE).unwrap();
+    }
+
+    #[test]
+    fn ready_is_one_text_or_several() {
+        let claude = Preset::parse("claude", builtin("claude").unwrap()).unwrap();
+        assert_eq!(claude.ready, ["? for shortcuts", "shift+tab to cycle"], "bypass mode hides the first");
+        assert_eq!(
+            Preset::parse("opencode", builtin("opencode").unwrap()).unwrap().ready,
+            ["ctrl+p commands"]
+        );
     }
 
     #[test]

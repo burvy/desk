@@ -9,9 +9,13 @@ resume = ["--resume", "{session}"]
 output = "claude"
 interactive = ["claude", "--model", "{model}"]
 models = ["sonnet", "opus", "haiku"]
-# Shown under the input box only when Claude Code is waiting for a message.
-ready = "? for shortcuts"
+# Shown under the input box only when Claude Code is waiting for a message:
+# the first in the default permission mode, the second in the others (bypass,
+# accept edits, plan), where it replaces the first.
+ready = ["? for shortcuts", "shift+tab to cycle"]
 
 # Use your claude.ai login, not an API key that happens to be set.
 # Delete this line (in a copy under the workspace's presets/) to bill the key instead.
-env = { ANTHROPIC_API_KEY = "" }
+# Started from inside a Claude Code session, Claude would also see itself as
+# a child session and not save transcripts, so `--resume` would find nothing.
+env = { ANTHROPIC_API_KEY = "", CLAUDE_CODE_CHILD_SESSION = "" }

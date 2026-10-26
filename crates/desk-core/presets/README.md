@@ -34,5 +34,6 @@ In `interactive`, an option whose value is `{model}` or `{session}` is left
 out when that's empty. Terminal agents run `interactive` (plus `bypass` and
 `system`) in a terminal inside desk-gui, and desk types their messages in.
 `interrupt` is what stops a turn there (default: Escape). `ready` is text the
-screen shows only when the CLI is waiting for a message; desk types only then,
-so it never answers a trust or permission prompt for you.
+screen shows only when the CLI is waiting for a message (one string, or a list
+where any will do); desk types only then, so it never answers a trust or
+permission prompt for you.

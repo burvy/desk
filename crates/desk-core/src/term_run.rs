@@ -23,6 +23,8 @@ use std::time::{Duration, Instant};
 
 /// How long the screen must stay unchanged before desk types into it.
 const QUIET: Duration = Duration::from_secs(3);
+/// How long typed text may take to show up before desk counts it as dropped.
+const TAKEN: Duration = Duration::from_secs(2);
 /// A CLI that exits sooner than this after starting counts as a failure.
 const EARLY_EXIT: Duration = Duration::from_secs(10);
 
@@ -42,7 +44,16 @@ pub(crate) struct TermAgent {
     interrupted: HashSet<PathBuf>,
     /// The mail typed in this turn (now in `read/`), put back if the CLI dies mid-turn.
     typed: Vec<PathBuf>,
+    /// Pasted, not yet submitted: Enter waits until the screen shows the CLI took it.
+    pending: Option<Pending>,
     transcript: PathBuf,
+}
+
+pub(crate) struct Pending {
+    text: String,
+    /// The screen before the paste.
+    before: String,
+    at: Instant,
 }
 
 impl Supervisor {
@@ -86,7 +97,7 @@ impl Supervisor {
             && t.term.exited()
         {
             let early = t.term.started.elapsed() < EARLY_EXIT;
-            let busy = t.busy_since.is_some();
+            let busy = t.busy_since.is_some() || t.pending.is_some();
             let typed = t.typed.clone();
             self.close_terminal(name);
             if busy {
@@ -131,6 +142,33 @@ impl Supervisor {
             t.changed = Instant::now();
         }
         let quiet = t.changed.elapsed() >= QUIET;
+
+        // Some CLIs show their prompt a moment before they read input, and drop
+        // what's typed meanwhile. Submit only text that showed up; otherwise
+        // put the mail back and type it again once the screen is quiet.
+        if let Some(p) = &t.pending {
+            if took(&p.before, &screen, &p.text) {
+                let p = t.pending.take().expect("checked above");
+                t.term.write(b"\r".to_vec());
+                t.fresh = false;
+                t.busy_since = Some(Instant::now());
+                t.changed = Instant::now();
+                log_line(
+                    &t.transcript,
+                    serde_json::json!({ "desk": "prompt", "ts": fsutil::now_rfc3339(), "text": p.text }),
+                );
+                st.state = "running".into();
+                st.save(&ws, name)?;
+                ws.log("run_start", serde_json::json!({ "agent": name, "terminal": true }));
+            } else if p.at.elapsed() > TAKEN {
+                t.pending = None;
+                unread_again(&ws, name, &std::mem::take(&mut t.typed));
+                t.handoff = false;
+                t.changed = Instant::now();
+                notes.push(format!("{name}: its CLI didn't take the typed text; trying again"));
+            }
+            return Ok(());
+        }
 
         // A turn is over once the screen has settled after a delivery.
         if let Some(since) = t.busy_since
@@ -177,7 +215,8 @@ impl Supervisor {
             return Ok(());
         }
         if !ready {
-            if !unread.is_empty() && st.state != "waiting" {
+            // Still starting up is not waiting on you.
+            if !unread.is_empty() && st.state != "waiting" && t.term.started.elapsed() > EARLY_EXIT {
                 st.state = "waiting".into();
                 st.save(&ws, name)?;
                 let looking_for = preset.ready.join("` or `");
@@ -245,22 +284,7 @@ impl Supervisor {
 
         let t = self.terms.get_mut(name).expect("checked above");
         t.term.paste(&text);
-        // Submit a moment later, so the CLI has taken the paste in first.
-        let term = t.term.clone();
-        std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(300));
-            term.write(b"\r".to_vec());
-        });
-        t.fresh = false;
-        t.busy_since = Some(Instant::now());
-        t.changed = Instant::now();
-        log_line(
-            &t.transcript,
-            serde_json::json!({ "desk": "prompt", "ts": fsutil::now_rfc3339(), "text": text }),
-        );
-        st.state = "running".into();
-        st.save(&ws, name)?;
-        ws.log("run_start", serde_json::json!({ "agent": name, "terminal": true }));
+        t.pending = Some(Pending { text, before: screen, at: Instant::now() });
         Ok(())
     }
 
@@ -268,6 +292,7 @@ impl Supervisor {
         let preset = Preset::load(&self.ws, &cfg.cli)?;
         let role_file = cfg.role_file(&self.ws);
         let prompt_file = self.ws.agent_dir(name).join("scratch").join("prompt.md");
+        let projects = self.ws.other_projects(&cfg.dir);
         let spec = RunSpec {
             cfg,
             session: None,
@@ -275,6 +300,7 @@ impl Supervisor {
             role_file: &role_file,
             prompt_file: &prompt_file,
             workspace: &self.ws.root,
+            projects: &projects,
         };
         let (program, args) = preset.terminal_command(&spec)?;
         let env = agent_env(&self.ws, name, cfg, &preset)?;
@@ -294,6 +320,7 @@ impl Supervisor {
                 handoff: false,
                 interrupted: HashSet::new(),
                 typed: Vec::new(),
+                pending: None,
                 transcript,
             },
         );
@@ -313,6 +340,16 @@ impl Supervisor {
     }
 }
 
+/// Whether pasted `text` shows on the screen now and didn't before: its first
+/// words, or the "[Pasted text …]" line CLIs show for a long paste. A screen
+/// that merely changed (a spinner, a rotating banner) doesn't count.
+fn took(before: &str, now: &str, text: &str) -> bool {
+    let first: String =
+        text.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("").chars().take(16).collect();
+    let pastes = |s: &str| s.to_lowercase().matches("paste").count();
+    (!first.is_empty() && now.contains(&first) && !before.contains(&first)) || pastes(now) > pastes(before)
+}
+
 /// Moves typed mail from `read/` back to the inbox.
 fn unread_again(ws: &crate::Workspace, name: &str, paths: &[PathBuf]) {
     let read = ws.inbox(name).join("read");
@@ -325,4 +362,21 @@ fn unread_again(ws: &crate::Workspace, name: &str, paths: &[PathBuf]) {
 
 fn log_line(path: &std::path::Path, value: serde_json::Value) {
     let _ = fsutil::append_line(path, &value.to_string());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::took;
+
+    #[test]
+    fn typed_text_has_to_show_up() {
+        let text = "[desk] To fb. Your project: Z:/game\n\nfix the build";
+        let empty = "│ ▍Enter a coding task │\n Ad: try Exa";
+        assert!(took(empty, "│ [desk] To fb. Your proj▍ │\n Ad: try Exa", text));
+        assert!(took(empty, "│ [Pasted text #1 +3 lines] │", text), "a long paste shown collapsed");
+        assert!(
+            !took(empty, "│ ▍Enter a coding task │\n Ad: Surge SMS API", text),
+            "a rotating banner isn't the text"
+        );
+    }
 }

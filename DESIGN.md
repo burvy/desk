@@ -22,7 +22,7 @@ Status: v0 (core + CLI) works. v1 GUI (`desk-gui`) works: start screen, agents (
 workspace folder            ← plain files, source of truth
       ▲
 desk core (Rust lib)        ← watches inboxes, delivers, spawns/kills, logs
-      │   └─ CLI presets: claude, opencode, codex, gemini, qwen, goose, cline, yours
+      │   └─ CLI presets: claude, opencode, and commands you type
       ├─ desk CLI           ← what agents (and you) call
       └─ desk GUI (egui)    ← what you look at
 ```
@@ -226,18 +226,18 @@ desk pause [--now] | resume [name] resume <name> retries a stopped agent
 
 ## CLI presets
 
-Each agent CLI is a preset: a small TOML file that names the command, how sessions continue, and how to read the output. Claude and OpenCode are presets like the rest. Built-in presets ship in the binary (`crates/desk-core/presets/`), and a workspace's `presets/<name>.toml` adds or overrides one. `presets/README.md` lists the fields.
+Each agent CLI is a preset: a small TOML file that names the command, how sessions continue, and how to read the output. Claude and OpenCode are built in (`crates/desk-core/presets/`); any other CLI is a command typed in the window, saved as a preset that runs it in a terminal. Built-in presets ship in the binary (`crates/desk-core/presets/`), and a workspace's `presets/<name>.toml` adds or overrides one. `presets/README.md` lists the fields.
 
 ```toml
-program = "goose"
-args = ["run", "--instructions", "-", "--name", "{session}"]
+program = "opencode"
+args = ["run", "--format", "json"]
 model_args = ["--model", "{model}"]
-session = "named"        # stream (id read from output) | named (desk names it) | none
-resume = ["--resume"]
-output = "text"          # claude | opencode (JSON streams desk parses) | text
+session = "stream"       # stream (id read from output) | named (desk names it) | none
+resume = ["--session", "{session}"]
+output = "opencode"      # claude | opencode (JSON streams desk parses) | text
 ```
 
-The prompt goes to stdin unless `args` mention `{prompt_file}`. The only CLI-specific Rust is the two stream parsers, which give desk tool calls, token counts and session ids. With `text` output, the transcript is the CLI's plain output. Claude and OpenCode are verified; the others are written from each CLI's `--help` and marked untested.
+The prompt goes to stdin unless `args` mention `{prompt_file}`. The only CLI-specific Rust is the two stream parsers, which give desk tool calls, token counts and session ids. With `text` output, the transcript is the CLI's plain output. A typed command has no flags desk needs to know: it runs in a terminal and desk types messages in.
 
 ## GUI (egui)
 

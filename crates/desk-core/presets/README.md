@@ -1,8 +1,13 @@
 # Presets
 
-How desk runs each agent CLI. desk ships presets for claude, opencode, codex,
-gemini, qwen, goose, cline and zcode. A file here, `<name>.toml`, adds a new CLI or
-replaces a built-in one. `desk presets` lists them all.
+How desk runs each agent CLI. Two are built in: claude and opencode, whose
+output desk reads. Any other CLI is a command you type in the Add agent form
+("Type a command…"), which saves a preset here that runs it in a terminal. A
+file here, `<name>.toml`, adds a CLI or replaces a built-in one. `desk presets`
+lists them all.
+
+`per_project` is added once for each of the workspace's other project folders,
+with `{project}` filled in (Claude: `["--add-dir", "{project}"]`).
 
 An agent's `cli` in `agent.toml` names its preset.
 

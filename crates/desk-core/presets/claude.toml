@@ -9,6 +9,8 @@ resume = ["--resume", "{session}"]
 output = "claude"
 interactive = ["claude", "--model", "{model}"]
 models = ["sonnet", "opus", "haiku"]
+# Claude only works inside its folder and the --add-dir ones: give it every project folder.
+per_project = ["--add-dir", "{project}"]
 # Shown under the input box only when Claude Code is waiting for a message:
 # the first in the default permission mode, the second in the others (bypass,
 # accept edits, plan), where it replaces the first.

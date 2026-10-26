@@ -164,6 +164,33 @@ impl Workspace {
         std::env::var("DESK_AGENT").unwrap_or_else(|_| self.config.human.clone())
     }
 
+    /// The project folders in desk.toml other than `dir` (an agent's own).
+    pub fn other_projects(&self, dir: &Path) -> Vec<PathBuf> {
+        let key = |p: &Path| {
+            let s = p.display().to_string().replace('\\', "/");
+            let s = s.trim_end_matches('/').to_string();
+            if cfg!(windows) { s.to_lowercase() } else { s }
+        };
+        self.config.projects.values().filter(|p| key(p) != key(dir)).cloned().collect()
+    }
+
+    /// Replaces `[projects]` in desk.toml, keeping the rest of the file and its comments.
+    pub fn set_projects(&self, projects: &BTreeMap<String, PathBuf>) -> Result<()> {
+        for name in projects.keys() {
+            check_name(name).with_context(|| format!("folder name `{name}`"))?;
+        }
+        let path = self.root.join("desk.toml");
+        let mut doc: toml_edit::DocumentMut = fsutil::read(&path)?.parse().context("parsing desk.toml")?;
+        let mut table = toml_edit::Table::new();
+        for (name, dir) in projects {
+            table.insert(name, toml_edit::value(dir.display().to_string()));
+        }
+        doc.insert("projects", toml_edit::Item::Table(table));
+        fsutil::write_atomic(&path, &doc.to_string())?;
+        self.log("projects_set", serde_json::json!({ "projects": projects }));
+        Ok(())
+    }
+
     /// `--dir` accepts a project name from desk.toml or a path.
     pub fn resolve_dir(&self, dir: &str) -> Result<PathBuf> {
         let p = match self.config.projects.get(dir) {
@@ -194,3 +221,26 @@ Project taste. Agents read this before writing code. Edit freely.
 - Commits are the human's: use their git identity and no AI co-author lines.
 - Run the tests before handing work to review.
 ";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn folders_are_saved_with_your_comments() {
+        let dir = std::env::temp_dir().join(format!("desk-folders-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let ws = Workspace::init(&dir, "me").unwrap();
+        let site = dir.join("site");
+        let projects =
+            BTreeMap::from([("game".to_string(), dir.join("game")), ("site".to_string(), site.clone())]);
+        ws.set_projects(&projects).unwrap();
+        let text = std::fs::read_to_string(dir.join("desk.toml")).unwrap();
+        assert!(text.starts_with("# desk workspace"), "the header comment stays");
+        let ws = Workspace::open(&dir).unwrap();
+        assert_eq!(ws.config.projects, projects);
+        assert_eq!(ws.other_projects(&site), [dir.join("game")], "an agent's own folder isn't repeated");
+        assert!(ws.set_projects(&BTreeMap::from([("my game".to_string(), site)])).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

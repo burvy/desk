@@ -4,6 +4,7 @@
 use crate::Embedded;
 use crate::agent_form::AgentForm;
 use crate::clis::CliEditor;
+use crate::folders::Folders;
 use crate::notify::Notifier;
 use crate::snapshot::{AgentRow, Snapshot};
 use desk_core::adapter::{self, Event, Preset};
@@ -29,6 +30,7 @@ enum View {
     Inbox,
     Activity,
     Clis,
+    Folders,
 }
 
 #[derive(Default)]
@@ -60,6 +62,7 @@ pub struct App {
     flash: Option<(String, bool, Instant)>,
     form: Option<AgentForm>,
     clis: CliEditor,
+    folders: Folders,
     /// For terminal agents: the desk log instead of the live terminal.
     show_log: bool,
     /// The agent whose Remove is waiting for a yes.
@@ -93,6 +96,7 @@ impl App {
             flash: None,
             form: None,
             clis: CliEditor::default(),
+            folders: Folders::default(),
             show_log: false,
             removing: None,
             notifier: None,
@@ -268,6 +272,13 @@ impl App {
             .clicked()
         {
             self.view = View::Clis;
+        }
+        if ui
+            .selectable_label(self.view == View::Folders, "Folders")
+            .on_hover_text("The project's folders; every agent knows them all")
+            .clicked()
+        {
+            self.view = View::Folders;
         }
         ui.separator();
         ui.label(RichText::new("AGENTS").weak().small());
@@ -813,6 +824,12 @@ impl App {
             View::Clis => {
                 if let Some(msg) = self.clis.ui(ui, &self.ws) {
                     self.report(Ok(msg));
+                }
+            }
+            View::Folders => {
+                if let Some(r) = self.folders.ui(ui, &self.ws) {
+                    self.report(r);
+                    self.refresh(true);
                 }
             }
         });

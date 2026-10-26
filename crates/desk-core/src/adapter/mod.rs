@@ -15,16 +15,23 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const BUILTIN: [(&str, &str); 9] = [
+/// Built in: the two desk reads a stream from. Any other CLI is a command you
+/// type in the window (`from_command`), saved in the workspace.
+const BUILTIN: [(&str, &str); 2] = [
     ("claude", include_str!("../../presets/claude.toml")),
     ("opencode", include_str!("../../presets/opencode.toml")),
-    ("codex", include_str!("../../presets/codex.toml")),
-    ("gemini", include_str!("../../presets/gemini.toml")),
-    ("qwen", include_str!("../../presets/qwen.toml")),
-    ("goose", include_str!("../../presets/goose.toml")),
-    ("cline", include_str!("../../presets/cline.toml")),
-    ("zcode", include_str!("../../presets/zcode.toml")),
-    ("junie", include_str!("../../presets/junie.toml")),
+];
+
+/// Built in before custom commands, and the command each ran in a terminal.
+/// An agent still using one gets it back as a custom command in its workspace.
+const RETIRED: [(&str, &str); 7] = [
+    ("codex", "codex"),
+    ("gemini", "gemini"),
+    ("qwen", "qwen"),
+    ("goose", "goose session"),
+    ("cline", "cline"),
+    ("zcode", "zcode"),
+    ("junie", "junie --skip-update-check"),
 ];
 
 /// One preset. In `args`, `bypass`, `resume` and the rest, these are filled in:
@@ -72,6 +79,9 @@ pub struct Preset {
     pub model_env: BTreeMap<String, String>,
     /// Model suggestions for the GUI.
     pub models: Vec<String>,
+    /// Added once for each of the workspace's other project folders, with
+    /// `{project}` filled in: how a CLI gets access to them (Claude: `--add-dir`).
+    pub per_project: Vec<String>,
 }
 
 pub struct RunSpec<'a> {
@@ -82,6 +92,8 @@ pub struct RunSpec<'a> {
     pub role_file: &'a Path,
     pub prompt_file: &'a Path,
     pub workspace: &'a Path,
+    /// The workspace's other project folders.
+    pub projects: &'a [PathBuf],
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -130,10 +142,15 @@ impl Preset {
         if path.is_file() {
             return Self::parse(name, &std::fs::read_to_string(&path)?);
         }
-        match BUILTIN.iter().find(|(n, _)| *n == name) {
-            Some((_, text)) => Self::parse(name, text),
-            None => bail!("no preset `{name}`. Known: {}", names(ws).join(", ")),
+        if let Some((_, text)) = BUILTIN.iter().find(|(n, _)| *n == name) {
+            return Self::parse(name, text);
         }
+        if let Some((_, command)) = RETIRED.iter().find(|(n, _)| *n == name) {
+            let (_, text) = from_command(command, "")?;
+            save(ws, name, &text)?;
+            return Self::parse(name, &text);
+        }
+        bail!("no preset `{name}`. Known: {}", names(ws).join(", "))
     }
 
     /// The command for one run, in `cfg.dir`.
@@ -151,6 +168,7 @@ impl Preset {
         if run.resuming {
             c.args(fill(&self.resume));
         }
+        c.args(self.project_args(run.projects));
         for (k, v) in &self.env {
             if v.is_empty() {
                 c.env_remove(k);
@@ -176,6 +194,14 @@ impl Preset {
             .replace("{prompt_file}", &run.prompt_file.display().to_string())
     }
 
+    fn project_args(&self, projects: &[PathBuf]) -> Vec<String> {
+        let mut v = Vec::new();
+        for p in projects {
+            v.extend(self.per_project.iter().map(|a| a.replace("{project}", &p.display().to_string())));
+        }
+        v
+    }
+
     /// Whether the prompt is passed as a file instead of on stdin.
     pub fn uses_prompt_file(&self) -> bool {
         self.args.iter().any(|a| a.contains("{prompt_file}"))
@@ -187,7 +213,12 @@ impl Preset {
     }
 
     /// The program and args that open this session interactively, for take-over.
-    pub fn interactive(&self, cfg: &AgentConfig, session: Option<&str>) -> Result<Vec<String>> {
+    pub fn interactive(
+        &self,
+        cfg: &AgentConfig,
+        session: Option<&str>,
+        projects: &[PathBuf],
+    ) -> Result<Vec<String>> {
         if self.interactive.is_empty() {
             bail!("preset `{}` has no interactive command", self.name);
         }
@@ -200,7 +231,10 @@ impl Preset {
         }
         let v = drop_empty(&v, &cfg.model, session);
         let session = session.unwrap_or("");
-        Ok(v.into_iter().map(|a| a.replace("{model}", &cfg.model).replace("{session}", session)).collect())
+        let mut v: Vec<String> =
+            v.into_iter().map(|a| a.replace("{model}", &cfg.model).replace("{session}", session)).collect();
+        v.extend(self.project_args(projects));
+        Ok(v)
     }
 
     /// The interactive command for a terminal agent: a fresh session each time
@@ -215,6 +249,7 @@ impl Preset {
             args.extend(self.bypass.iter().map(|a| self.fill(a, run)));
         }
         args.extend(self.system.iter().map(|a| self.fill(a, run)));
+        args.extend(self.project_args(run.projects));
         Ok((which(program).unwrap_or_else(|| PathBuf::from(program)), args))
     }
 
@@ -294,6 +329,80 @@ pub fn save(ws: &Workspace, name: &str, text: &str) -> Result<()> {
     Ok(())
 }
 
+/// A CLI you start by typing its command (`freebuff`, `pi --yolo`), as a
+/// preset: `(name, TOML)`. It's meant for a terminal agent, where desk types
+/// messages in, so desk needs nothing else from the CLI. `ready`, if given,
+/// is text its screen shows only when it's waiting for a message. Named after
+/// the program; a built-in's name gets `-custom` so the built-in stays.
+pub fn from_command(command: &str, ready: &str) -> Result<(String, String)> {
+    let argv = split_command(command)?;
+    let Some(program) = argv.first() else { bail!("type the command that starts the CLI") };
+    let stem = Path::new(program).file_stem().unwrap_or_default().to_string_lossy().to_lowercase();
+    let mut name: String =
+        stem.chars().map(|c| if c.is_ascii_alphanumeric() || c == '_' { c } else { '-' }).collect();
+    name = name.trim_matches('-').to_string();
+    if name.is_empty() {
+        name = "custom".into();
+    }
+    if BUILTIN.iter().any(|(n, _)| *n == name) {
+        name.push_str("-custom");
+    }
+    let mut t = toml::Table::new();
+    t.insert("description".into(), format!("Custom: {command}").trim().to_string().into());
+    t.insert("program".into(), program.clone().into());
+    t.insert("session".into(), "none".into());
+    t.insert("output".into(), "text".into());
+    t.insert("interactive".into(), argv.clone().into());
+    if !ready.trim().is_empty() {
+        t.insert("ready".into(), vec![ready.trim().to_string()].into());
+    }
+    let text = format!(
+        "# Made from the command `{command}` in desk's window. It runs in a\n\
+         # terminal: desk types messages in. See README.md for the other fields.\n{}",
+        toml::to_string(&t)?
+    );
+    Preset::parse(&name, &text)?;
+    Ok((name, text))
+}
+
+/// The command a preset made by `from_command` was made from, for editing.
+pub fn command_of(p: &Preset) -> Option<String> {
+    p.description.strip_prefix("Custom: ").map(str::to_string)
+}
+
+/// Splits a command line into words. Quotes ("..." or '...') keep spaces in;
+/// backslashes are ordinary, so Windows paths work as typed.
+fn split_command(line: &str) -> Result<Vec<String>> {
+    let (mut words, mut word, mut quote, mut started) = (Vec::new(), String::new(), None, false);
+    for c in line.chars() {
+        match (quote, c) {
+            (Some(q), c) if c == q => quote = None,
+            (Some(_), c) => word.push(c),
+            (None, '"' | '\'') => {
+                quote = Some(c);
+                started = true;
+            }
+            (None, c) if c.is_whitespace() => {
+                if started {
+                    words.push(std::mem::take(&mut word));
+                    started = false;
+                }
+            }
+            (None, c) => {
+                word.push(c);
+                started = true;
+            }
+        }
+    }
+    if quote.is_some() {
+        bail!("a quote in the command isn't closed");
+    }
+    if started {
+        words.push(word);
+    }
+    Ok(words)
+}
+
 /// Deletes the workspace's file: a built-in goes back to its default.
 pub fn remove(ws: &Workspace, name: &str) -> Result<()> {
     std::fs::remove_file(preset_file(ws, name))?;
@@ -335,6 +444,10 @@ fn program(name: &str) -> Command {
 }
 
 fn which(name: &str) -> Option<PathBuf> {
+    // A path, typed as one.
+    if Path::new(name).is_file() {
+        return Some(PathBuf::from(name));
+    }
     let exts: Vec<String> = if cfg!(windows) {
         std::env::var("PATHEXT")
             .unwrap_or_else(|_| ".EXE;.CMD;.BAT".into())
@@ -394,6 +507,37 @@ mod tests {
     }
 
     #[test]
+    fn presets_from_typed_commands() {
+        let (name, text) = from_command(r#"free-pi-cli --yolo --system "be brief""#, "").unwrap();
+        let p = Preset::parse(&name, &text).unwrap();
+        assert_eq!(name, "free-pi-cli");
+        assert_eq!(p.interactive, ["free-pi-cli", "--yolo", "--system", "be brief"]);
+        assert!(p.ready.is_empty());
+        assert_eq!(command_of(&p).as_deref(), Some(r#"free-pi-cli --yolo --system "be brief""#));
+
+        let (name, text) = from_command(r"C:\Tools\Freebuff.EXE", "> ").unwrap();
+        let p = Preset::parse(&name, &text).unwrap();
+        assert_eq!((name.as_str(), p.program.as_str()), ("freebuff", r"C:\Tools\Freebuff.EXE"));
+        assert_eq!(p.ready, [">"], "trimmed, like the screen text it's matched against");
+
+        assert_eq!(from_command("opencode --yolo", "").unwrap().0, "opencode-custom", "built-ins stay");
+        assert!(from_command("   ", "").is_err());
+        assert!(from_command("pi \"oops", "").is_err());
+    }
+
+    #[test]
+    fn retired_builtins_come_back_as_commands() {
+        let dir = std::env::temp_dir().join(format!("desk-retired-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let ws = Workspace::init(&dir, "me").unwrap();
+        let p = Preset::load(&ws, "junie").unwrap();
+        assert_eq!(p.interactive, ["junie", "--skip-update-check"]);
+        assert_eq!(origin(&ws, "junie"), Origin::Custom, "saved in the workspace, so it's yours to edit");
+        assert!(Preset::load(&ws, "nope").is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn ready_is_one_text_or_several() {
         let claude = Preset::parse("claude", builtin("claude").unwrap()).unwrap();
         assert_eq!(claude.ready, ["? for shortcuts", "shift+tab to cycle"], "bypass mode hides the first");
@@ -441,6 +585,7 @@ mod tests {
             role_file: Path::new("role.md"),
             prompt_file: Path::new("p.md"),
             workspace: Path::new("ws"),
+            projects: &[],
         };
         let c = p.command(&spec);
         let args: Vec<_> = c.get_args().map(|a| a.to_string_lossy().into_owned()).collect();

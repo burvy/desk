@@ -35,6 +35,16 @@ pub fn delivery(ws: &Workspace, d: &Delivery) -> String {
         ws.root.display(),
         ws.config.human
     );
+    // A project spread over several folders: every agent knows them all.
+    if !ws.config.projects.is_empty() {
+        let list: Vec<String> =
+            ws.config.projects.iter().map(|(n, p)| format!("{n} ({})", p.display())).collect();
+        let _ = writeln!(
+            p,
+            "The project's folders, which work together; read and change across them as the work needs: {}.",
+            list.join(", ")
+        );
+    }
     if d.new_session {
         let _ = writeln!(
             p,
@@ -48,7 +58,8 @@ pub fn delivery(ws: &Workspace, d: &Delivery) -> String {
     let _ = writeln!(
         p,
         "{n} new message{}. Delivery is at-least-once: if something looks familiar, check your memory \
-         before redoing it. Your text output only reaches your transcript; use `desk send` to reach anyone.",
+         before redoing it. Your text output only reaches your transcript, which the human doesn't read: \
+         use `desk send` to reach anyone, and put every question for the human in `desk ask`.",
         if n == 1 { "" } else { "s" }
     );
     if let Some(t) = d.task {

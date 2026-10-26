@@ -46,6 +46,10 @@ pub(crate) struct Run {
     /// Set when desk stops the run on purpose; the mail stays unread.
     stopping: Option<&'static str>,
     error: Option<String>,
+    /// The run's latest text, and whether it ran `desk ask` or `desk send`:
+    /// a question left in the transcript is one the human never sees.
+    last_text: String,
+    reached_out: bool,
 }
 
 enum Update {
@@ -363,8 +367,19 @@ impl Supervisor {
             "run_start",
             serde_json::json!({ "agent": name, "pid": pid, "messages": delivered, "handoff": handoff }),
         );
-        self.runs
-            .insert(name.to_string(), Run { pid, resuming, delivered, handoff, stopping: None, error: None });
+        self.runs.insert(
+            name.to_string(),
+            Run {
+                pid,
+                resuming,
+                delivered,
+                handoff,
+                stopping: None,
+                error: None,
+                last_text: String::new(),
+                reached_out: false,
+            },
+        );
         Ok(())
     }
 
@@ -388,6 +403,16 @@ impl Supervisor {
             Event::Error(msg) => {
                 if let Some(run) = self.runs.get_mut(name) {
                     run.error = Some(msg);
+                }
+            }
+            Event::Text(t) if !t.trim().is_empty() => {
+                if let Some(run) = self.runs.get_mut(name) {
+                    run.last_text = t;
+                }
+            }
+            Event::Tool { detail, .. } if detail.contains("desk ask") || detail.contains("desk send") => {
+                if let Some(run) = self.runs.get_mut(name) {
+                    run.reached_out = true;
                 }
             }
             _ => {}
@@ -416,6 +441,16 @@ impl Supervisor {
                 notes.push(format!("{name}: handoff written, session reset"));
             } else {
                 notes.push(format!("{name}: done"));
+                if !run.reached_out && ends_in_question(&run.last_text) {
+                    let q = format!(
+                        "{}\n\n*desk raised this: {name} ended its turn with this question in its transcript, \
+                         which you don't see, instead of using `desk ask`.*",
+                        run.last_text.trim()
+                    );
+                    if crate::ask::new(&self.ws, name, None, false, &q).is_ok() {
+                        notes.push(format!("{name}: its question is now an ask"));
+                    }
+                }
             }
         } else {
             // A session that never got going (a named one, say) isn't worth resuming.
@@ -512,6 +547,11 @@ impl Drop for Supervisor {
     }
 }
 
+/// Whether a turn's last text ends on a question: its last paragraph asks something.
+fn ends_in_question(text: &str) -> bool {
+    text.trim().rsplit("\n\n").next().is_some_and(|p| p.contains('?'))
+}
+
 /// What an agent gets in one run. Interrupts go first. An orchestrator gets
 /// one task's mail per turn, so it never juggles unrelated work.
 pub(crate) fn pick_batch(cfg: &AgentConfig, mut unread: Vec<Message>) -> (Vec<Message>, Option<String>) {
@@ -547,6 +587,7 @@ fn agent_command(
 ) -> Result<std::process::Command> {
     let role_file = cfg.role_file(ws);
     let prompt_file = prompt_file(ws, name);
+    let projects = ws.other_projects(&cfg.dir);
     let spec = RunSpec {
         cfg,
         session,
@@ -554,6 +595,7 @@ fn agent_command(
         role_file: &role_file,
         prompt_file: &prompt_file,
         workspace: &ws.root,
+        projects: &projects,
     };
     let mut cmd = preset.command(&spec);
     cmd.env("DESK_WORKSPACE", &ws.root)
@@ -797,6 +839,13 @@ mod tests {
         // Interrupts still jump the queue.
         let unread = vec![msg("2", Kind::Raw), msg("4", Kind::Interrupt)];
         assert_eq!(names(pick_batch(&cfg, unread)), ["4"]);
+    }
+
+    #[test]
+    fn questions_left_in_the_transcript() {
+        assert!(ends_in_question("Merged 049.\n\nShould rebels keep their land, or lose it?"));
+        assert!(!ends_in_question("Is it flaky? It was.\n\nFixed and merged."));
+        assert!(!ends_in_question(""));
     }
 
     #[test]

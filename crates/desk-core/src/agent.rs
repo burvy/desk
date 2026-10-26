@@ -9,7 +9,7 @@ use std::path::PathBuf;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentConfig {
-    /// The CLI preset: `claude`, `opencode`, `goose`... (see `desk presets`).
+    /// The CLI preset: `claude`, `opencode`, or one of yours (see `desk presets`).
     pub cli: String,
     /// Whatever the CLI accepts: `sonnet`, `opencode/glm-5.3-flash-free`.
     pub model: String,
@@ -212,8 +212,11 @@ pub fn request_reset(ws: &Workspace, name: &str) -> Result<()> {
 /// Returns the command line that opens the session interactively.
 pub fn take_over(ws: &Workspace, name: &str) -> Result<Vec<String>> {
     let cfg = AgentConfig::load(ws, name)?;
-    let cmd = crate::adapter::Preset::load(ws, &cfg.cli)?
-        .interactive(&cfg, AgentState::load(ws, name).session.as_deref())?;
+    let cmd = crate::adapter::Preset::load(ws, &cfg.cli)?.interactive(
+        &cfg,
+        AgentState::load(ws, name).session.as_deref(),
+        &ws.other_projects(&cfg.dir),
+    )?;
     fsutil::write_atomic(&ws.agent_dir(name).join("HELD"), "")?;
     ws.log("take_over", serde_json::json!({ "agent": name }));
     Ok(cmd)

@@ -24,4 +24,4 @@ desk answer 3 "falling block"              # answer an agent's question
 
 Everything lives in the workspace folder. `cat` it, edit it, commit it. `DESIGN.md` explains how it works, and `DECISIONS.md` explains why.
 
-CLIs: `desk presets` lists them (claude, opencode, codex, gemini, qwen, goose, cline, zcode). Edit them, or add your own, under CLIs in the window (saved as `presets/<name>.toml` in the workspace). An agent's Terminal button opens its project with desk's setup and the exact command desk runs.
+CLIs: Claude and OpenCode are built in. For any other, click "Type a command…" in Add agent and type what starts it (`freebuff`, `pi --yolo`); it runs in a terminal in the window. Folders lists the project's folders, so every agent knows them all. An agent's Terminal button opens its project with desk's setup and the exact command desk runs.
